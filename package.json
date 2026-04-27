@@ -1,0 +1,13 @@
+{
+  "name": "ai-video-creator",
+  "version": "1.0.0",
+  "private": true,
+  "description": "AI视频生成应用 - 通过LLM对话确定分镜脚本，生成图片和视频",
+  "scripts": {
+    "dev:client": "cd client && npm run dev",
+    "dev:server": "cd server && npm run dev",
+    "install:all": "npm install && cd client && npm install && cd ../server && npm install",
+    "build:client": "cd client && npm run build",
+    "build:server": "cd server && npm run build"
+  }
+}
