@@ -22,12 +22,10 @@ export default function ChatPanel({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
-  // 自动滚动到底部
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  // 自动调整输入框高度
   useEffect(() => {
     if (textareaRef.current) {
       textareaRef.current.style.height = 'auto';
@@ -49,6 +47,8 @@ export default function ChatPanel({
     setMessages((prev) => [...prev, userMsg]);
     setInput('');
     setLoading(true);
+    // 发送后保持输入框焦点
+    textareaRef.current?.focus();
 
     try {
       const allMessages = [...messages, userMsg];
@@ -73,6 +73,8 @@ export default function ChatPanel({
       setMessages((prev) => [...prev, errorMsg]);
     } finally {
       setLoading(false);
+      // 回复完成后重新聚焦输入框
+      setTimeout(() => textareaRef.current?.focus(), 0);
     }
   };
 
@@ -84,13 +86,13 @@ export default function ChatPanel({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-runway-black">
       {/* 消息列表 */}
-      <div className="flex-1 overflow-y-auto p-4 space-y-4">
+      <div className="flex-1 overflow-y-auto p-5 space-y-4">
         {messages.length === 0 && (
-          <div className="text-center text-gray-400 mt-20">
-            <p className="text-lg mb-2">👋 你好！我是你的 AI 视频创作助手</p>
-            <p className="text-sm">告诉我你想制作什么样的视频，我来帮你规划分镜脚本</p>
+          <div className="text-center mt-24">
+            <p className="text-feature-title text-white mb-2">AI 视频创作助手</p>
+            <p className="text-small text-runway-slate">告诉我你想制作什么样的视频，我来帮你规划分镜脚本</p>
           </div>
         )}
 
@@ -100,18 +102,18 @@ export default function ChatPanel({
             className={`flex ${msg.role === 'user' ? 'justify-end' : 'justify-start'}`}
           >
             <div
-              className={`max-w-[80%] rounded-2xl px-4 py-3 ${
+              className={`max-w-[80%] rounded-comfortable px-4 py-3 ${
                 msg.role === 'user'
-                  ? 'bg-blue-600 text-white'
-                  : 'bg-white border border-gray-200 text-gray-800'
+                  ? 'bg-white text-black'
+                  : 'bg-runway-surface border border-runway-border text-runway-silver'
               }`}
             >
               {msg.role === 'assistant' ? (
-                <div className="prose prose-sm max-w-none prose-p:my-1 prose-ul:my-1 prose-li:my-0.5">
+                <div className="prose-runway text-sm">
                   <ReactMarkdown>{msg.content}</ReactMarkdown>
                 </div>
               ) : (
-                <p className="whitespace-pre-wrap text-sm">{msg.content}</p>
+                <p className="whitespace-pre-wrap text-sm tracking-body">{msg.content}</p>
               )}
             </div>
           </div>
@@ -119,9 +121,9 @@ export default function ChatPanel({
 
         {loading && (
           <div className="flex justify-start">
-            <div className="bg-white border border-gray-200 rounded-2xl px-4 py-3 flex items-center gap-2 text-gray-400">
-              <Loader2 className="w-4 h-4 animate-spin" />
-              <span className="text-sm">AI 正在思考...</span>
+            <div className="bg-runway-surface border border-runway-border rounded-comfortable px-4 py-3 flex items-center gap-2">
+              <Loader2 className="w-4 h-4 animate-spin text-runway-slate" />
+              <span className="text-sm text-runway-slate">思考中...</span>
             </div>
           </div>
         )}
@@ -130,22 +132,22 @@ export default function ChatPanel({
       </div>
 
       {/* 输入区域 */}
-      <div className="border-t border-gray-200 bg-white p-4">
-        <div className="flex items-end gap-2">
+      <div className="border-t border-runway-border bg-runway-deep p-4">
+        <div className="flex items-end gap-3">
           <textarea
             ref={textareaRef}
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={disabled ? '当前阶段不可对话' : '描述你的视频创意... (Enter 发送, Shift+Enter 换行)'}
+            placeholder={disabled ? '当前阶段不可对话' : '描述你的视频创意... (Enter 发送)'}
             disabled={disabled || loading}
             rows={1}
-            className="flex-1 resize-none rounded-xl border border-gray-300 px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:bg-gray-50 disabled:text-gray-400"
+            className="flex-1 resize-none rounded-subtle bg-runway-surface border border-runway-border px-4 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
           />
           <button
             onClick={handleSend}
             disabled={!input.trim() || loading || disabled}
-            className="p-3 rounded-xl bg-blue-600 text-white hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+            className="p-3 rounded-subtle bg-white text-black hover:bg-runway-cloud disabled:bg-runway-surface disabled:text-runway-slate disabled:cursor-not-allowed transition-colors"
             aria-label="发送消息"
           >
             <Send className="w-4 h-4" />

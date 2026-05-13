@@ -24,7 +24,6 @@ export default function VideoPanel({
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const startedRef = useRef(false);
 
-  // 组件挂载时自动开始生成
   useEffect(() => {
     if (!startedRef.current && !videoUrl && !videoError) {
       startedRef.current = true;
@@ -43,7 +42,6 @@ export default function VideoPanel({
     setProgress('正在提交视频生成任务...');
 
     try {
-      // 收集所有分镜的图片URL
       const imageUrls = storyboard.scenes
         .filter((s) => s.imageUrl)
         .map((s) => s.imageUrl!);
@@ -54,12 +52,10 @@ export default function VideoPanel({
         return;
       }
 
-      // 构建视频描述 prompt
       const videoPrompt = storyboard.scenes
         .map((s, i) => `图${i + 1}：${s.description}`)
         .join('。');
 
-      // 提交异步任务
       const result = await generateVideoAsync({
         imageUrls,
         prompt: videoPrompt,
@@ -69,8 +65,6 @@ export default function VideoPanel({
 
       setTaskId(result.taskId);
       setProgress('任务已提交，正在生成视频...');
-
-      // 开始轮询
       startPolling(result.taskId);
     } catch (err: any) {
       onVideoError(err.message);
@@ -98,11 +92,9 @@ export default function VideoPanel({
           onVideoError('视频生成失败，请重试');
         }
       } catch (err: any) {
-        // 轮询出错不立即停止，继续重试
         console.error('轮询出错:', err.message);
       }
 
-      // 超时保护 10 分钟
       if (elapsed > 600) {
         if (pollingRef.current) clearInterval(pollingRef.current);
         setGenerating(false);
@@ -119,14 +111,14 @@ export default function VideoPanel({
   };
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full bg-runway-black">
       {/* 标题栏 */}
-      <div className="px-6 py-4 border-b border-gray-200 bg-white">
+      <div className="px-6 py-4 border-b border-runway-border">
         <div className="flex items-center gap-2">
-          <Film className="w-5 h-5 text-purple-600" />
-          <h2 className="text-lg font-semibold text-gray-900">视频生成</h2>
+          <Film className="w-4 h-4 text-white" />
+          <h2 className="text-feature-title text-white">视频生成</h2>
         </div>
-        <p className="text-sm text-gray-500 mt-1">
+        <p className="text-small text-runway-slate mt-1">
           {storyboard.title} · {storyboard.scenes.length} 个分镜
         </p>
       </div>
@@ -134,16 +126,15 @@ export default function VideoPanel({
       {/* 内容区 */}
       <div className="flex-1 flex items-center justify-center p-8">
         {videoUrl ? (
-          // 视频生成完成
-          <div className="text-center space-y-4 w-full max-w-lg">
-            <div className="flex items-center justify-center gap-2 text-green-600 mb-4">
-              <CheckCircle className="w-6 h-6" />
-              <span className="text-lg font-medium">视频生成完成！</span>
+          <div className="text-center space-y-6 w-full max-w-lg">
+            <div className="flex items-center justify-center gap-2 text-white mb-4">
+              <CheckCircle className="w-5 h-5" />
+              <span className="text-feature-title">视频生成完成</span>
             </div>
             <video
               src={videoUrl}
               controls
-              className="w-full rounded-xl shadow-lg border border-gray-200"
+              className="w-full rounded-comfortable border border-runway-border"
               autoPlay
               loop
             />
@@ -151,40 +142,38 @@ export default function VideoPanel({
               href={videoUrl}
               target="_blank"
               rel="noopener noreferrer"
-              className="inline-block mt-4 text-sm text-blue-600 hover:text-blue-700 underline"
+              className="inline-block text-small text-runway-slate hover:text-white underline underline-offset-4 transition-colors"
             >
-              在新窗口打开视频
+              在新窗口打开
             </a>
           </div>
         ) : videoError ? (
-          // 生成失败
-          <div className="text-center space-y-4">
-            <div className="flex items-center justify-center gap-2 text-red-500">
-              <AlertCircle className="w-6 h-6" />
-              <span className="text-lg font-medium">生成失败</span>
+          <div className="text-center space-y-5">
+            <AlertCircle className="w-8 h-8 text-runway-muted mx-auto" />
+            <div>
+              <p className="text-feature-title text-white mb-2">生成失败</p>
+              <p className="text-small text-runway-slate max-w-md">{videoError}</p>
             </div>
-            <p className="text-sm text-gray-500 max-w-md">{videoError}</p>
             <button
               onClick={handleRetry}
-              className="inline-flex items-center gap-2 bg-purple-600 text-white px-6 py-2 rounded-lg text-sm font-medium hover:bg-purple-700 transition-colors"
+              className="inline-flex items-center gap-2 bg-white text-black px-5 py-2 rounded-sharp text-xs font-semibold hover:bg-runway-cloud transition-colors"
             >
-              <RefreshCw className="w-4 h-4" />
+              <RefreshCw className="w-3.5 h-3.5" />
               重新生成
             </button>
           </div>
         ) : (
-          // 生成中
-          <div className="text-center space-y-4">
-            <Loader2 className="w-12 h-12 text-purple-500 animate-spin mx-auto" />
+          <div className="text-center space-y-5">
+            <Loader2 className="w-10 h-10 text-runway-slate animate-spin mx-auto" />
             <div>
-              <p className="text-lg font-medium text-gray-800">视频生成中</p>
-              <p className="text-sm text-gray-500 mt-1">{progress}</p>
+              <p className="text-feature-title text-white">视频生成中</p>
+              <p className="text-small text-runway-slate mt-2">{progress}</p>
               {taskId && (
-                <p className="text-xs text-gray-400 mt-2">任务ID: {taskId}</p>
+                <p className="text-micro text-runway-charcoal mt-3 normal-case">ID: {taskId}</p>
               )}
             </div>
-            <p className="text-xs text-gray-400 max-w-sm mx-auto">
-              视频生成通常需要 1-5 分钟，请耐心等待。生成过程中请不要关闭页面。
+            <p className="text-micro text-runway-charcoal max-w-sm mx-auto normal-case">
+              视频生成通常需要 1-5 分钟，请耐心等待
             </p>
           </div>
         )}

@@ -1,15 +1,48 @@
-import { Outlet, Link } from 'react-router-dom';
+import { Outlet, Link, useLocation } from 'react-router-dom';
 import { Film } from 'lucide-react';
 
+const tabs = [
+  { name: '首页', path: '/' },
+  { name: '对话', path: '/chat' },
+  { name: '应用', path: '/apps' },
+];
+
 export default function Layout() {
+  const location = useLocation();
+
+  const isActiveTab = (path: string) => {
+    if (path === '/') return location.pathname === '/';
+    return location.pathname.startsWith(path);
+  };
+
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-runway-black flex flex-col">
       {/* 顶部导航 */}
-      <header className="bg-white border-b border-gray-200 px-6 py-3 flex items-center gap-3">
-        <Link to="/" className="flex items-center gap-2 text-gray-900 hover:text-blue-600 transition-colors">
-          <Film className="w-6 h-6 text-blue-600" />
-          <h1 className="text-lg font-semibold">AI 视频创作工坊</h1>
-        </Link>
+      <header className="bg-runway-black/80 backdrop-blur-sm border-b border-runway-border px-6 sticky top-0 z-50">
+        <div className="flex items-center h-14">
+          {/* Logo */}
+          <Link to="/" className="flex items-center gap-2.5 text-white hover:opacity-80 transition-opacity mr-10">
+            <Film className="w-5 h-5" />
+            <h1 className="text-base font-medium tracking-body">AI Studio</h1>
+          </Link>
+
+          {/* 标签页导航 */}
+          <nav className="flex items-center gap-1 h-full">
+            {tabs.map((tab) => (
+              <Link
+                key={tab.path}
+                to={tab.path}
+                className={`px-4 py-2 text-sm font-medium rounded-md transition-colors ${
+                  isActiveTab(tab.path)
+                    ? 'text-white bg-runway-surface'
+                    : 'text-runway-slate hover:text-white hover:bg-runway-surface/50'
+                }`}
+              >
+                {tab.name}
+              </Link>
+            ))}
+          </nav>
+        </div>
       </header>
 
       {/* 主内容 */}

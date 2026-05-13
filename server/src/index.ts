@@ -5,6 +5,7 @@ import { chatRouter } from './routes/chat';
 import { storyboardRouter } from './routes/storyboard';
 import { imageRouter } from './routes/image';
 import { videoRouter } from './routes/video';
+import { fissionRouter } from './routes/fission';
 
 dotenv.config();
 
@@ -20,6 +21,7 @@ app.use('/api/chat', chatRouter);
 app.use('/api/storyboard', storyboardRouter);
 app.use('/api/image', imageRouter);
 app.use('/api/video', videoRouter);
+app.use('/api/fission', fissionRouter);
 
 // 健康检查
 app.get('/api/health', (_req, res) => {

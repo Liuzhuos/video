@@ -2,11 +2,11 @@ import { MessageSquare, FileText, Image, Film, Check } from 'lucide-react';
 import type { ProjectPhase } from '../types';
 
 const phases: { key: ProjectPhase; label: string; icon: React.ReactNode }[] = [
-  { key: 'chat', label: 'AI 对话', icon: <MessageSquare className="w-4 h-4" /> },
-  { key: 'storyboard', label: '分镜脚本', icon: <FileText className="w-4 h-4" /> },
-  { key: 'images', label: '图片准备', icon: <Image className="w-4 h-4" /> },
-  { key: 'video', label: '视频生成', icon: <Film className="w-4 h-4" /> },
-  { key: 'done', label: '完成', icon: <Check className="w-4 h-4" /> },
+  { key: 'chat', label: 'AI 对话', icon: <MessageSquare className="w-3.5 h-3.5" /> },
+  { key: 'storyboard', label: '分镜脚本', icon: <FileText className="w-3.5 h-3.5" /> },
+  { key: 'images', label: '图片准备', icon: <Image className="w-3.5 h-3.5" /> },
+  { key: 'video', label: '视频生成', icon: <Film className="w-3.5 h-3.5" /> },
+  { key: 'done', label: '完成', icon: <Check className="w-3.5 h-3.5" /> },
 ];
 
 const phaseOrder: ProjectPhase[] = ['chat', 'storyboard', 'images', 'video', 'done'];
@@ -20,35 +20,34 @@ export default function PhaseIndicator({ currentPhase, onPhaseClick }: PhaseIndi
   const currentIndex = phaseOrder.indexOf(currentPhase);
 
   return (
-    <div className="bg-white border-b border-gray-200 px-6 py-3">
-      <div className="flex items-center gap-2 max-w-3xl mx-auto">
+    <div className="bg-runway-black border-b border-runway-border px-6 py-3">
+      <div className="flex items-center gap-1.5 max-w-3xl mx-auto">
         {phases.map((p, i) => {
           const isActive = p.key === currentPhase;
           const isDone = i < currentIndex;
-          // 只能点击已完成的阶段（回退）
           const canClick = isDone && onPhaseClick;
 
           return (
-            <div key={p.key} className="flex items-center gap-2">
+            <div key={p.key} className="flex items-center gap-1.5">
               {i > 0 && (
                 <div
-                  className={`w-8 h-px ${isDone ? 'bg-blue-400' : 'bg-gray-200'}`}
+                  className={`w-6 h-px ${isDone ? 'bg-white/40' : 'bg-runway-border'}`}
                 />
               )}
               <button
                 type="button"
                 disabled={!canClick}
                 onClick={() => canClick && onPhaseClick(p.key)}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm font-medium transition-colors ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-sharp text-xs font-medium transition-all ${
                   isActive
-                    ? 'bg-blue-100 text-blue-700'
+                    ? 'bg-white text-black'
                     : isDone
-                    ? 'bg-green-50 text-green-600 hover:bg-green-100 cursor-pointer'
-                    : 'bg-gray-100 text-gray-400 cursor-default'
-                } ${canClick ? '' : 'cursor-default'}`}
+                    ? 'bg-runway-surface text-white border border-runway-border hover:bg-runway-charcoal cursor-pointer'
+                    : 'text-runway-slate cursor-default'
+                }`}
               >
                 {p.icon}
-                <span>{p.label}</span>
+                <span className="tracking-label uppercase">{p.label}</span>
               </button>
             </div>
           );
