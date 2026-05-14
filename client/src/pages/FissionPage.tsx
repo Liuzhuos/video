@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef } from 'react';
 import {
   Upload,
   Image as ImageIcon,
@@ -10,11 +10,15 @@ import {
   ChevronRight,
   Check,
   Camera,
+  Music,
+  Video,
+  ChevronDown,
+  ChevronUp,
 } from 'lucide-react';
 import { uploadImage } from '../api/image';
-import { uploadVideo, generateFissionVideo, checkFissionTask } from '../api/fission';
+import { uploadVideo } from '../api/fission';
 
-type FissionStep = 'prepare' | 'configure' | 'generate';
+type FissionStep = 'prepare' | 'generate';
 type ImageSource = 'frame' | 'text2img' | 'img2img';
 type ImageModel = 'g' | 'v2' | 'pro';
 
@@ -23,13 +27,12 @@ interface PreparedImage {
   url: string;
   source: ImageSource;
   label: string;
-  aspectRatio?: number;
+  pending?: boolean;
 }
 
-// 截帧弹窗中的临时帧
 interface CapturedFrame {
   id: string;
-  localUrl: string; // canvas blob URL，仅用于预览
+  localUrl: string;
   blob: Blob;
   label: string;
 }
@@ -39,7 +42,7 @@ function CaptureFrameModal({
   onConfirm,
   onClose,
 }: {
-  onConfirm: (frames: CapturedFrame[]) => void;
+  onConfirm: (frames: CapturedFrame[], destination: 'source' | 'pad') => void;
   onClose: () => void;
 }) {
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
@@ -51,8 +54,7 @@ function CaptureFrameModal({
     const file = e.target.files?.[0];
     if (!file) return;
     e.target.value = '';
-    const url = URL.createObjectURL(file);
-    setVideoUrl(url);
+    setVideoUrl(URL.createObjectURL(file));
     setFrames([]);
   };
 
@@ -69,21 +71,13 @@ function CaptureFrameModal({
       if (!blob) return;
       const localUrl = URL.createObjectURL(blob);
       const time = video.currentTime.toFixed(2);
-      setFrames((prev) => [
-        ...prev,
-        { id: `frame_${Date.now()}`, localUrl, blob, label: `${time}s` },
-      ]);
+      setFrames((prev) => [...prev, { id: `frame_${Date.now()}`, localUrl, blob, label: `${time}s` }]);
     }, 'image/png');
-  };
-
-  const removeFrame = (id: string) => {
-    setFrames((prev) => prev.filter((f) => f.id !== id));
   };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
       <div className="bg-runway-surface border border-runway-border rounded-xl w-[720px] max-w-[95vw] max-h-[90vh] flex flex-col shadow-2xl">
-        {/* 标题栏 */}
         <div className="flex items-center justify-between px-5 py-4 border-b border-runway-border flex-shrink-0">
           <div className="flex items-center gap-2">
             <Film className="w-4 h-4 text-runway-slate" />
@@ -95,7 +89,6 @@ function CaptureFrameModal({
         </div>
 
         <div className="flex-1 overflow-y-auto p-5 flex flex-col gap-4 min-h-0">
-          {/* 上传区 */}
           <input ref={fileInputRef} type="file" accept="video/*" onChange={handleVideoSelect} className="hidden" />
           {!videoUrl ? (
             <button
@@ -108,35 +101,20 @@ function CaptureFrameModal({
             </button>
           ) : (
             <div className="space-y-3">
-              <video
-                ref={videoRef}
-                src={videoUrl}
-                controls
-                className="w-full rounded-lg bg-black"
-                style={{ maxHeight: '300px' }}
-              />
+              <video ref={videoRef} src={videoUrl} controls className="w-full rounded-lg bg-black" style={{ maxHeight: '300px' }} />
               <div className="flex gap-2">
-                <button
-                  onClick={handleCapture}
-                  className="flex-1 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors flex items-center justify-center gap-2"
-                >
-                  <Camera className="w-4 h-4" />
-                  截取当前帧
+                <button onClick={handleCapture} className="flex-1 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors flex items-center justify-center gap-2">
+                  <Camera className="w-4 h-4" />截取当前帧
                 </button>
-                <button
-                  onClick={() => fileInputRef.current?.click()}
-                  className="px-4 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-                >
+                <button onClick={() => fileInputRef.current?.click()} className="px-4 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors">
                   换视频
                 </button>
               </div>
             </div>
           )}
-
-          {/* 已截取的帧预览 */}
           {frames.length > 0 && (
             <div>
-              <p className="text-xs text-runway-slate mb-2">已截取 {frames.length} 帧，点击确认后加入源图列表</p>
+              <p className="text-xs text-runway-slate mb-2">已截取 {frames.length} 帧</p>
               <div className="grid grid-cols-4 gap-2">
                 {frames.map((f) => (
                   <div key={f.id} className="relative rounded-md overflow-hidden border border-runway-border group">
@@ -144,10 +122,7 @@ function CaptureFrameModal({
                     <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1.5 py-0.5">
                       <span className="text-xs text-white">{f.label}</span>
                     </div>
-                    <button
-                      onClick={() => removeFrame(f.id)}
-                      className="absolute top-1 right-1 w-5 h-5 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80"
-                    >
+                    <button onClick={() => setFrames((p) => p.filter((x) => x.id !== f.id))} className="absolute top-1 right-1 w-5 h-5 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80">
                       <X className="w-3 h-3 text-white" />
                     </button>
                   </div>
@@ -157,20 +132,15 @@ function CaptureFrameModal({
           )}
         </div>
 
-        {/* 底部按钮 */}
         <div className="flex gap-3 px-5 py-4 border-t border-runway-border flex-shrink-0">
-          <button
-            onClick={onClose}
-            className="px-5 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-          >
+          <button onClick={onClose} className="px-5 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors">
             取消
           </button>
-          <button
-            onClick={() => frames.length > 0 && onConfirm(frames)}
-            disabled={frames.length === 0}
-            className="flex-1 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-          >
-            确认（{frames.length} 张）
+          <button onClick={() => frames.length > 0 && onConfirm(frames, 'source')} disabled={frames.length === 0} className="flex-1 py-2 border border-runway-border text-runway-slate text-sm font-medium rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+            加入图生图源图（{frames.length} 张）
+          </button>
+          <button onClick={() => frames.length > 0 && onConfirm(frames, 'pad')} disabled={frames.length === 0} className="flex-1 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-40 disabled:cursor-not-allowed">
+            直接加入垫图区（{frames.length} 张）
           </button>
         </div>
       </div>
@@ -181,63 +151,86 @@ function CaptureFrameModal({
 // ==================== 主页面 ====================
 export default function FissionPage() {
   const [step, setStep] = useState<FissionStep>('prepare');
+
+  // 垫图列表
   const [images, setImages] = useState<PreparedImage[]>([]);
-  const [selectedImageId, setSelectedImageId] = useState<string | null>(null);
-  const [videoUrl, setVideoUrl] = useState<string | null>(null);
-  const [referenceVideoUrl, setReferenceVideoUrl] = useState<string | null>(null);
-  const [useReferenceVideo, setUseReferenceVideo] = useState(false);
-  const [prompt, setPrompt] = useState('');
+  // 准备垫图步骤中选中的图片（多选，最多9张）
+  const [selectedPadIds, setSelectedPadIds] = useState<string[]>([]);
+
+  // 图生图源图
+  const [img2imgSources, setImg2imgSources] = useState<{ url: string; label: string }[]>([]);
+
+  // 文生图/图生图参数
   const [textToImagePrompt, setTextToImagePrompt] = useState('');
   const [img2imgPrompt, setImg2imgPrompt] = useState('');
-  // 图生图源图：支持多张
-  const [img2imgSources, setImg2imgSources] = useState<{ url: string; label: string }[]>([]);
-  const [aspectRatio, setAspectRatio] = useState<string>('16:9');
+  const [aspectRatio, setAspectRatio] = useState('16:9');
   const [resolution, setResolution] = useState<'1k' | '2k' | '4k'>('1k');
   const [t2iModel, setT2iModel] = useState<ImageModel>('g');
   const [i2iModel, setI2iModel] = useState<ImageModel>('g');
+
+  // Seedance 2.0 参数
+  const [videoPrompt, setVideoPrompt] = useState('');
+  const [videoDuration, setVideoDuration] = useState('5');
+  const [videoResolution, setVideoResolution] = useState('720p');
+  const [videoRatio, setVideoRatio] = useState('adaptive');
+  const [generateAudio, setGenerateAudio] = useState(false);
+  const [realPersonMode, setRealPersonMode] = useState(false);
+  const [useRefVideo, setUseRefVideo] = useState(false);
+  const [useRefAudio, setUseRefAudio] = useState(false);
+  const [refVideoLocalUrl, setRefVideoLocalUrl] = useState<string | null>(null);
+  const [refVideoUrl, setRefVideoUrl] = useState<string | null>(null);
+  const [refAudioLocalName, setRefAudioLocalName] = useState<string | null>(null);
+  const [refAudioUrl, setRefAudioUrl] = useState<string | null>(null);
+
+  // 生成结果
+  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
+  const [videoGenerating, setVideoGenerating] = useState(false);
+  const [videoLoadingMsg, setVideoLoadingMsg] = useState('');
+
+  // 通用 loading（上传类）
   const [loading, setLoading] = useState(false);
   const [loadingMsg, setLoadingMsg] = useState('');
-  const [generatedVideoUrl, setGeneratedVideoUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [showCaptureModal, setShowCaptureModal] = useState(false);
 
-  const selectedImage = images.find((img) => img.id === selectedImageId);
-
-  // 上传视频（用于参考视频）
-  const handleVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    e.target.value = '';
-    const localUrl = URL.createObjectURL(file);
-    setVideoUrl(localUrl);
-    try {
-      setLoading(true);
-      setLoadingMsg('上传视频中...');
-      const result = await uploadVideo(file);
-      setReferenceVideoUrl(result.url);
-    } catch (err: any) {
-      setError(err.message);
-    } finally {
-      setLoading(false);
-      setLoadingMsg('');
-    }
+  // ── 垫图多选逻辑 ──
+  const togglePadSelect = (id: string) => {
+    setSelectedPadIds((prev) => {
+      if (prev.includes(id)) return prev.filter((x) => x !== id);
+      if (prev.length >= 9) return prev; // 最多9张
+      return [...prev, id];
+    });
   };
 
-  // 截帧弹窗确认：上传所有帧并加入源图列表
-  const handleCaptureConfirm = async (frames: CapturedFrame[]) => {
+  // ── 截帧确认 ──
+  const handleCaptureConfirm = async (frames: CapturedFrame[], destination: 'source' | 'pad') => {
     setShowCaptureModal(false);
     try {
       setLoading(true);
-      setLoadingMsg(`上传截帧中 (0/${frames.length})...`);
       setError(null);
-      const uploaded: { url: string; label: string }[] = [];
-      for (let i = 0; i < frames.length; i++) {
-        setLoadingMsg(`上传截帧中 (${i + 1}/${frames.length})...`);
-        const file = new File([frames[i].blob], `frame_${Date.now()}.png`, { type: 'image/png' });
-        const result = await uploadImage(file);
-        uploaded.push({ url: result.url, label: `截帧 ${frames[i].label}` });
+      if (destination === 'source') {
+        const uploaded: { url: string; label: string }[] = [];
+        for (let i = 0; i < frames.length; i++) {
+          setLoadingMsg(`上传截帧中 (${i + 1}/${frames.length})...`);
+          const file = new File([frames[i].blob], `frame_${Date.now()}.png`, { type: 'image/png' });
+          const result = await uploadImage(file);
+          uploaded.push({ url: result.url, label: `截帧 ${frames[i].label}` });
+        }
+        setImg2imgSources((prev) => [...prev, ...uploaded]);
+      } else {
+        const slotIds = frames.map(() => `frame_${Date.now()}_${Math.random().toString(36).slice(2)}`);
+        setImages((prev) => [
+          ...prev,
+          ...slotIds.map((id, i) => ({ id, url: '', source: 'frame' as ImageSource, label: `截帧 ${frames[i].label}`, pending: true })),
+        ]);
+        for (let i = 0; i < frames.length; i++) {
+          setLoadingMsg(`上传截帧中 (${i + 1}/${frames.length})...`);
+          const file = new File([frames[i].blob], `frame_${Date.now()}.png`, { type: 'image/png' });
+          const result = await uploadImage(file);
+          const slotId = slotIds[i];
+          setImages((prev) => prev.map((img) => img.id === slotId ? { ...img, url: result.url, pending: false } : img));
+        }
       }
-      setImg2imgSources((prev) => [...prev, ...uploaded]);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -246,7 +239,7 @@ export default function FissionPage() {
     }
   };
 
-  // 上传图片（多张）
+  // ── 上传图片（图生图源图，多张）──
   const handleImageUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files ?? []);
     if (files.length === 0) return;
@@ -269,78 +262,70 @@ export default function FissionPage() {
     }
   };
 
-  // 文生图
+  // ── 文生图 ──
   const handleTextToImage = async () => {
     if (!textToImagePrompt.trim()) return;
+    const currentPrompt = textToImagePrompt.trim();
+    const slotId = `t2i_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    setImages((prev) => [...prev, { id: slotId, url: '', source: 'text2img', label: currentPrompt.slice(0, 20) + '...', pending: true }]);
+    setError(null);
     try {
-      setLoading(true);
-      setLoadingMsg('AI 生成图片中...');
-      setError(null);
       const response = await fetch('/api/image/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ prompt: textToImagePrompt.trim(), aspectRatio, resolution, model: t2iModel }),
+        body: JSON.stringify({ prompt: currentPrompt, aspectRatio, resolution, model: t2iModel }),
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || '文生图失败');
-      }
+      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '文生图失败'); }
       const result = await response.json();
-      const newImage: PreparedImage = {
-        id: `t2i_${Date.now()}`,
-        url: result.url,
-        source: 'text2img',
-        label: textToImagePrompt.trim().slice(0, 20) + '...',
-      };
-      setImages((prev) => [...prev, newImage]);
-      setSelectedImageId(newImage.id);
-      setTextToImagePrompt('');
+      setImages((prev) => prev.map((img) => img.id === slotId ? { ...img, url: result.url, pending: false } : img));
     } catch (err: any) {
+      setImages((prev) => prev.filter((img) => img.id !== slotId));
       setError(err.message);
-    } finally {
-      setLoading(false);
-      setLoadingMsg('');
     }
   };
 
-  // 图生图（使用第一张源图，或逐张生成）
+  // ── 图生图 ──
   const handleImageToImage = async () => {
     if (img2imgSources.length === 0 || !img2imgPrompt.trim()) return;
-    // 只用第一张源图做图生图（如需批量可扩展）
     const sourceUrl = img2imgSources[0].url;
-    if (!sourceUrl.startsWith('http')) {
-      setError('源图片必须是公网URL，请使用AI生图或上传后重试');
-      return;
-    }
+    if (!sourceUrl.startsWith('http')) { setError('源图片必须是公网URL，请使用AI生图或上传后重试'); return; }
+    const currentPrompt = img2imgPrompt.trim();
+    const slotId = `i2i_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    setImages((prev) => [...prev, { id: slotId, url: '', source: 'img2img', label: `图生图: ${currentPrompt.slice(0, 15)}...`, pending: true }]);
+    setError(null);
     try {
-      setLoading(true);
-      setLoadingMsg('AI 图生图中...');
-      setError(null);
       const response = await fetch('/api/fission/image-to-image', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          imageUrl: sourceUrl,
-          prompt: img2imgPrompt.trim(),
-          aspectRatio,
-          resolution,
-          model: i2iModel,
-        }),
+        body: JSON.stringify({ imageUrl: sourceUrl, prompt: currentPrompt, aspectRatio, resolution, model: i2iModel }),
       });
-      if (!response.ok) {
-        const err = await response.json();
-        throw new Error(err.error || '图生图失败');
-      }
+      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '图生图失败'); }
       const result = await response.json();
-      const newImage: PreparedImage = {
-        id: `i2i_${Date.now()}`,
-        url: result.url,
-        source: 'img2img',
-        label: `图生图: ${img2imgPrompt.trim().slice(0, 15)}...`,
-      };
-      setImages((prev) => [...prev, newImage]);
-      setSelectedImageId(newImage.id);
-      setImg2imgPrompt('');
+      setImages((prev) => prev.map((img) => img.id === slotId ? { ...img, url: result.url, pending: false } : img));
+    } catch (err: any) {
+      setImages((prev) => prev.filter((img) => img.id !== slotId));
+      setError(err.message);
+    }
+  };
+
+  // ── 移除垫图 ──
+  const removeImage = (id: string) => {
+    setImages((prev) => prev.filter((img) => img.id !== id));
+    setSelectedPadIds((prev) => prev.filter((x) => x !== id));
+  };
+
+  // ── 上传参考视频 ──
+  const handleRefVideoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setRefVideoLocalUrl(URL.createObjectURL(file));
+    try {
+      setLoading(true);
+      setLoadingMsg('上传参考视频中...');
+      setError(null);
+      const result = await uploadVideo(file);
+      setRefVideoUrl(result.url);
     } catch (err: any) {
       setError(err.message);
     } finally {
@@ -349,76 +334,99 @@ export default function FissionPage() {
     }
   };
 
-  const removeImage = (id: string) => {
-    setImages((prev) => {
-      const next = prev.filter((img) => img.id !== id);
-      if (selectedImageId === id) {
-        setSelectedImageId(next.length > 0 ? next[0].id : null);
-      }
-      return next;
-    });
-  };
-
-  const removeSource = (idx: number) => {
-    setImg2imgSources((prev) => prev.filter((_, i) => i !== idx));
-  };
-
-  // 生成视频
-  const handleGenerateVideo = async () => {
-    if (!selectedImage || !prompt.trim()) return;
+  // ── 上传参考音频 ──
+  const handleRefAudioUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    e.target.value = '';
+    setRefAudioLocalName(file.name);
     try {
       setLoading(true);
-      setLoadingMsg('提交视频生成任务...');
+      setLoadingMsg('上传参考音频中...');
       setError(null);
-      setGeneratedVideoUrl(null);
-      const result = await generateFissionVideo({
-        imageUrl: selectedImage.url,
-        prompt: prompt.trim(),
-        referenceVideoUrl: useReferenceVideo && referenceVideoUrl ? referenceVideoUrl : undefined,
-      });
-      setLoadingMsg('视频生成中，请耐心等待...');
-      const pollInterval = 5000;
-      const maxWait = 10 * 60 * 1000;
-      const startTime = Date.now();
-      const poll = async () => {
-        while (Date.now() - startTime < maxWait) {
-          const status = await checkFissionTask(result.taskId);
-          if (status.status === 'success' && status.url) {
-            setGeneratedVideoUrl(status.url);
-            setStep('generate');
-            return;
-          }
-          if (status.status === 'failed') throw new Error('视频生成失败');
-          await new Promise((r) => setTimeout(r, pollInterval));
-        }
-        throw new Error('视频生成超时');
-      };
-      await poll();
+      const formData = new FormData();
+      formData.append('audio', file);
+      const response = await fetch('/api/fission/upload-audio', { method: 'POST', body: formData });
+      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '音频上传失败'); }
+      const result = await response.json();
+      setRefAudioUrl(result.url);
     } catch (err: any) {
       setError(err.message);
     } finally {
       setLoading(false);
       setLoadingMsg('');
+    }
+  };
+
+  // ── 生成视频（Seedance 2.0）──
+  const handleGenerateVideo = async () => {
+    const selectedImages = images.filter((img) => selectedPadIds.includes(img.id) && !img.pending);
+    const validImageUrls = selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'));
+    const validVideoUrls = refVideoUrl ? [refVideoUrl] : [];
+
+    if (validImageUrls.length === 0 && validVideoUrls.length === 0) {
+      setError('请先选择垫图（需要是已生成的公网图片）');
+      return;
+    }
+    if (!videoPrompt.trim()) { setError('请填写视频提示词'); return; }
+    try {
+      setVideoGenerating(true);
+      setVideoLoadingMsg('提交视频生成任务...');
+      setError(null);
+      setGeneratedVideoUrl(null);
+      const body: Record<string, any> = {
+        prompt: videoPrompt.trim(),
+        duration: videoDuration,
+        resolution: videoResolution,
+        ratio: videoRatio,
+        generateAudio,
+        realPersonMode,
+      };
+      if (validImageUrls.length > 0) body.imageUrls = validImageUrls;
+      if (useRefVideo && validVideoUrls.length > 0) body.videoUrls = validVideoUrls;
+      if (useRefAudio && refAudioUrl) body.audioUrls = [refAudioUrl];
+
+      const response = await fetch('/api/fission/seedance2', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '视频生成失败'); }
+      const { taskId } = await response.json();
+
+      setVideoLoadingMsg('视频生成中，请耐心等待...');
+      const maxWait = 10 * 60 * 1000;
+      const startTime = Date.now();
+      while (Date.now() - startTime < maxWait) {
+        const statusRes = await fetch(`/api/fission/task/${taskId}`);
+        const status = await statusRes.json();
+        if (status.status === 'success' && status.url) {
+          setGeneratedVideoUrl(status.url);
+          return;
+        }
+        if (status.status === 'failed') throw new Error('视频生成失败');
+        await new Promise((r) => setTimeout(r, 5000));
+      }
+      throw new Error('视频生成超时');
+    } catch (err: any) {
+      setError(err.message);
+    } finally {
+      setVideoGenerating(false);
+      setVideoLoadingMsg('');
     }
   };
 
   return (
-    <div className="h-full flex flex-col overflow-hidden">
+    <div className="h-[calc(100vh-56px)] flex flex-col overflow-hidden">
       {/* 步骤指示器 */}
-      <div className="border-b border-runway-border bg-runway-deep px-6 py-3">
+      <div className="border-b border-runway-border bg-runway-deep px-6 py-3 flex-shrink-0">
         <div className="flex items-center gap-2 text-sm">
-          {[
-            { key: 'prepare', label: '准备垫图' },
-            { key: 'configure', label: '配置参数' },
-            { key: 'generate', label: '生成视频' },
-          ].map((s, i) => (
+          {([{ key: 'prepare', label: '准备垫图' }, { key: 'generate', label: '生成视频' }] as const).map((s, i) => (
             <div key={s.key} className="flex items-center gap-2">
               {i > 0 && <ChevronRight className="w-4 h-4 text-runway-mid-slate" />}
               <button
-                onClick={() => setStep(s.key as FissionStep)}
-                className={`px-3 py-1 rounded-md transition-colors ${
-                  step === s.key ? 'bg-white text-black font-medium' : 'text-runway-slate hover:text-white'
-                }`}
+                onClick={() => setStep(s.key)}
+                className={`px-3 py-1 rounded-md transition-colors ${step === s.key ? 'bg-white text-black font-medium' : 'text-runway-slate hover:text-white'}`}
               >
                 {s.label}
               </button>
@@ -428,78 +436,82 @@ export default function FissionPage() {
       </div>
 
       {error && (
-        <div className="mx-6 mt-4 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-red-400 text-sm flex items-center justify-between">
+        <div className="mx-6 mt-3 p-3 bg-red-500/10 border border-red-500/30 rounded-md text-red-400 text-sm flex items-center justify-between flex-shrink-0">
           <span>{error}</span>
           <button onClick={() => setError(null)}><X className="w-4 h-4" /></button>
         </div>
       )}
       {loading && (
-        <div className="mx-6 mt-4 p-3 bg-blue-500/10 border border-blue-500/30 rounded-md text-blue-400 text-sm flex items-center gap-2">
-          <Loader2 className="w-4 h-4 animate-spin" />
-          <span>{loadingMsg}</span>
+        <div className="mx-6 mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-md text-blue-400 text-sm flex items-center gap-2 flex-shrink-0">
+          <Loader2 className="w-4 h-4 animate-spin" /><span>{loadingMsg}</span>
         </div>
       )}
 
-      <div className="flex-1 min-h-0 flex flex-col">
+      <div className="flex-1 min-h-0 overflow-hidden">
         {step === 'prepare' && (
-          <div className="flex-1 min-h-0 p-6 flex flex-col">
-            <PrepareStep
-              images={images}
-              selectedImageId={selectedImageId}
-              textToImagePrompt={textToImagePrompt}
-              img2imgPrompt={img2imgPrompt}
-              img2imgSources={img2imgSources}
-              aspectRatio={aspectRatio}
-              resolution={resolution}
-              t2iModel={t2iModel}
-              i2iModel={i2iModel}
-              loading={loading}
-              onTextToImage={handleTextToImage}
-              onImageUpload={handleImageUpload}
-              onImageToImage={handleImageToImage}
-              onSelectImage={setSelectedImageId}
-              onRemoveImage={removeImage}
-              onRemoveSource={removeSource}
-              onTextToImagePromptChange={setTextToImagePrompt}
-              onImg2imgPromptChange={setImg2imgPrompt}
-              onAspectRatioChange={setAspectRatio}
-              onResolutionChange={setResolution}
-              onT2iModelChange={setT2iModel}
-              onI2iModelChange={setI2iModel}
-              onOpenCaptureModal={() => setShowCaptureModal(true)}
-              onNext={() => setStep('configure')}
-            />
-          </div>
-        )}
-        {step === 'configure' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            <ConfigureStep
-              images={images}
-              selectedImageId={selectedImageId}
-              selectedImage={selectedImage}
-              prompt={prompt}
-              useReferenceVideo={useReferenceVideo}
-              referenceVideoUrl={referenceVideoUrl}
-              videoUrl={videoUrl}
-              loading={loading}
-              onSelectImage={setSelectedImageId}
-              onPromptChange={setPrompt}
-              onUseReferenceVideoChange={setUseReferenceVideo}
-              onVideoUpload={handleVideoUpload}
-              onGenerate={handleGenerateVideo}
-              onBack={() => setStep('prepare')}
-            />
-          </div>
+          <PrepareStep
+            images={images}
+            selectedPadIds={selectedPadIds}
+            textToImagePrompt={textToImagePrompt}
+            img2imgPrompt={img2imgPrompt}
+            img2imgSources={img2imgSources}
+            aspectRatio={aspectRatio}
+            resolution={resolution}
+            t2iModel={t2iModel}
+            i2iModel={i2iModel}
+            loading={loading}
+            onTogglePadSelect={togglePadSelect}
+            onRemoveImage={removeImage}
+            onTextToImage={handleTextToImage}
+            onImageUpload={handleImageUpload}
+            onImageToImage={handleImageToImage}
+            onRemoveSource={(idx) => setImg2imgSources((prev) => prev.filter((_, i) => i !== idx))}
+            onTextToImagePromptChange={setTextToImagePrompt}
+            onImg2imgPromptChange={setImg2imgPrompt}
+            onAspectRatioChange={setAspectRatio}
+            onResolutionChange={setResolution}
+            onT2iModelChange={setT2iModel}
+            onI2iModelChange={setI2iModel}
+            onOpenCaptureModal={() => setShowCaptureModal(true)}
+            onNext={() => setStep('generate')}
+          />
         )}
         {step === 'generate' && (
-          <div className="flex-1 overflow-y-auto p-6">
-            <GenerateStep
-              generatedVideoUrl={generatedVideoUrl}
-              loading={loading}
-              loadingMsg={loadingMsg}
-              onBack={() => setStep('configure')}
-            />
-          </div>
+          <GenerateStep
+            images={images}
+            selectedPadIds={selectedPadIds}
+            onTogglePadSelect={togglePadSelect}
+            onRemoveImage={removeImage}
+            onAddImage={(img) => setImages((prev) => [...prev, img])}
+            videoPrompt={videoPrompt}
+            videoDuration={videoDuration}
+            videoResolution={videoResolution}
+            videoRatio={videoRatio}
+            generateAudio={generateAudio}
+            realPersonMode={realPersonMode}
+            useRefVideo={useRefVideo}
+            useRefAudio={useRefAudio}
+            refVideoLocalUrl={refVideoLocalUrl}
+            refVideoUrl={refVideoUrl}
+            refAudioLocalName={refAudioLocalName}
+            refAudioUrl={refAudioUrl}
+            generatedVideoUrl={generatedVideoUrl}
+            videoGenerating={videoGenerating}
+            videoLoadingMsg={videoLoadingMsg}
+            loading={loading}
+            onVideoPromptChange={setVideoPrompt}
+            onVideoDurationChange={setVideoDuration}
+            onVideoResolutionChange={setVideoResolution}
+            onVideoRatioChange={setVideoRatio}
+            onGenerateAudioChange={setGenerateAudio}
+            onRealPersonModeChange={setRealPersonMode}
+            onUseRefVideoChange={setUseRefVideo}
+            onUseRefAudioChange={setUseRefAudio}
+            onRefVideoUpload={handleRefVideoUpload}
+            onRefAudioUpload={handleRefAudioUpload}
+            onGenerate={handleGenerateVideo}
+            onBack={() => setStep('prepare')}
+          />
         )}
       </div>
 
@@ -515,33 +527,15 @@ export default function FissionPage() {
 
 // ==================== 步骤1：准备垫图 ====================
 function PrepareStep({
-  images,
-  selectedImageId,
-  textToImagePrompt,
-  img2imgPrompt,
-  img2imgSources,
-  aspectRatio,
-  resolution,
-  t2iModel,
-  i2iModel,
-  loading,
-  onTextToImage,
-  onImageUpload,
-  onImageToImage,
-  onSelectImage,
-  onRemoveImage,
-  onRemoveSource,
-  onTextToImagePromptChange,
-  onImg2imgPromptChange,
-  onAspectRatioChange,
-  onResolutionChange,
-  onT2iModelChange,
-  onI2iModelChange,
-  onOpenCaptureModal,
-  onNext,
+  images, selectedPadIds, textToImagePrompt, img2imgPrompt, img2imgSources,
+  aspectRatio, resolution, t2iModel, i2iModel, loading,
+  onTogglePadSelect, onRemoveImage, onTextToImage, onImageUpload, onImageToImage,
+  onRemoveSource, onTextToImagePromptChange, onImg2imgPromptChange,
+  onAspectRatioChange, onResolutionChange, onT2iModelChange, onI2iModelChange,
+  onOpenCaptureModal, onNext,
 }: {
   images: PreparedImage[];
-  selectedImageId: string | null;
+  selectedPadIds: string[];
   textToImagePrompt: string;
   img2imgPrompt: string;
   img2imgSources: { url: string; label: string }[];
@@ -550,11 +544,11 @@ function PrepareStep({
   t2iModel: ImageModel;
   i2iModel: ImageModel;
   loading: boolean;
+  onTogglePadSelect: (id: string) => void;
+  onRemoveImage: (id: string) => void;
   onTextToImage: () => void;
   onImageUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onImageToImage: () => void;
-  onSelectImage: (id: string) => void;
-  onRemoveImage: (id: string) => void;
   onRemoveSource: (idx: number) => void;
   onTextToImagePromptChange: (v: string) => void;
   onImg2imgPromptChange: (v: string) => void;
@@ -569,99 +563,45 @@ function PrepareStep({
   const imageInputRef = useRef<HTMLInputElement>(null!);
 
   return (
-    <div className="h-full flex gap-6 min-h-0">
+    <div className="h-full flex gap-0 overflow-hidden">
       {/* 左侧操作区 */}
-      <div className="w-80 flex-shrink-0 flex flex-col bg-runway-surface border border-runway-border rounded-lg overflow-hidden">
-        {/* Tab 切换 */}
+      <div className="w-96 flex-shrink-0 flex flex-col bg-runway-surface border-r border-runway-border min-h-0">
         <div className="flex border-b border-runway-border flex-shrink-0">
-          <button
-            onClick={() => setActiveTab('text2img')}
-            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
-              activeTab === 'text2img'
-                ? 'text-white border-b-2 border-white bg-runway-deep'
-                : 'text-runway-slate hover:text-white'
-            }`}
-          >
-            <Wand2 className="w-4 h-4" />
-            文生图
+          <button onClick={() => setActiveTab('text2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'text2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
+            <Wand2 className="w-4 h-4" />文生图
           </button>
-          <button
-            onClick={() => setActiveTab('img2img')}
-            className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${
-              activeTab === 'img2img'
-                ? 'text-white border-b-2 border-white bg-runway-deep'
-                : 'text-runway-slate hover:text-white'
-            }`}
-          >
-            <ImageIcon className="w-4 h-4" />
-            图生图
+          <button onClick={() => setActiveTab('img2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'img2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
+            <ImageIcon className="w-4 h-4" />图生图
           </button>
         </div>
 
         <div className="flex-1 overflow-y-auto p-4 flex flex-col gap-4">
-          {/* ── 文生图 ── */}
           {activeTab === 'text2img' && (
             <div className="flex flex-col gap-3">
               <p className="text-xs text-runway-slate">输入描述，AI 直接生成图片作为垫图。</p>
-              <textarea
-                value={textToImagePrompt}
-                onChange={(e) => onTextToImagePromptChange(e.target.value)}
-                placeholder="描述你想要的图片，例如：一只在草地上奔跑的金毛犬，阳光明媚..."
-                rows={4}
-                className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-2 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none"
-              />
+              <textarea value={textToImagePrompt} onChange={(e) => onTextToImagePromptChange(e.target.value)} placeholder="描述你想要的图片，例如：一只在草地上奔跑的金毛犬，阳光明媚..." rows={6} className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none" />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
               <ModelSelector label="模型" value={t2iModel} onChange={onT2iModelChange} />
-              <button
-                onClick={onTextToImage}
-                disabled={loading || !textToImagePrompt.trim()}
-                className="w-full py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                生成图片
-              </button>
             </div>
           )}
 
-          {/* ── 图生图 ── */}
           {activeTab === 'img2img' && (
             <div className="flex flex-col gap-4">
               <p className="text-xs text-runway-slate">上传或截取源图，AI 根据提示词对其进行变换。</p>
-
-              {/* 源图区域 */}
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs text-runway-slate">源图（{img2imgSources.length} 张）</p>
                   <div className="flex gap-1.5">
-                    {/* 本地上传 */}
-                    <input
-                      ref={imageInputRef}
-                      type="file"
-                      accept="image/*"
-                      multiple
-                      onChange={onImageUpload}
-                      className="hidden"
-                    />
-                    <button
-                      onClick={() => imageInputRef.current?.click()}
-                      disabled={loading}
-                      className="flex items-center gap-1 px-2 py-1 text-xs border border-runway-border text-runway-slate rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50"
-                    >
-                      <Upload className="w-3 h-3" />
-                      上传
+                    <input ref={imageInputRef} type="file" accept="image/*" multiple onChange={onImageUpload} className="hidden" />
+                    <button onClick={() => imageInputRef.current?.click()} disabled={loading} className="flex items-center gap-1 px-2 py-1 text-xs border border-runway-border text-runway-slate rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50">
+                      <Upload className="w-3 h-3" />上传
                     </button>
-                    {/* 视频截帧 */}
-                    <button
-                      onClick={onOpenCaptureModal}
-                      disabled={loading}
-                      className="flex items-center gap-1 px-2 py-1 text-xs border border-runway-border text-runway-slate rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50"
-                    >
-                      <Film className="w-3 h-3" />
-                      截帧
+                    <button onClick={onOpenCaptureModal} disabled={loading} className="flex items-center gap-1 px-2 py-1 text-xs border border-runway-border text-runway-slate rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50">
+                      <Film className="w-3 h-3" />截帧
                     </button>
                   </div>
                 </div>
-
                 {img2imgSources.length === 0 ? (
                   <div className="border-2 border-dashed border-runway-border rounded-md p-5 flex flex-col items-center gap-2 text-center">
                     <ImageIcon className="w-6 h-6 text-runway-mid-slate" />
@@ -671,67 +611,53 @@ function PrepareStep({
                   <div className="grid grid-cols-3 gap-1.5">
                     {img2imgSources.map((src, idx) => (
                       <div key={idx} className="relative rounded-md overflow-hidden border border-runway-border group aspect-square">
-                        <img
-                          src={src.url.startsWith('http') ? src.url : `http://localhost:3001${src.url}`}
-                          alt={src.label}
-                          className="w-full h-full object-cover"
-                        />
-                        <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-colors" />
-                        <button
-                          onClick={() => onRemoveSource(idx)}
-                          className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80"
-                        >
+                        <img src={src.url.startsWith('http') ? src.url : `http://localhost:3001${src.url}`} alt={src.label} className="w-full h-full object-cover" />
+                        <button onClick={() => onRemoveSource(idx)} className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80">
                           <X className="w-2.5 h-2.5 text-white" />
                         </button>
-                        <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-1 py-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
-                          <span className="text-xs text-white truncate block">{src.label}</span>
-                        </div>
                       </div>
                     ))}
                   </div>
                 )}
               </div>
-
-              {/* 提示词 */}
-              <textarea
-                value={img2imgPrompt}
-                onChange={(e) => onImg2imgPromptChange(e.target.value)}
-                placeholder="描述想要的变化，例如：将背景改为夜晚城市..."
-                rows={3}
-                className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-2 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none"
-              />
+              <textarea value={img2imgPrompt} onChange={(e) => onImg2imgPromptChange(e.target.value)} placeholder="描述想要的变化，例如：将背景改为夜晚城市..." rows={5} className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none" />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
               <ModelSelector label="模型" value={i2iModel} onChange={onI2iModelChange} />
-              <button
-                onClick={onImageToImage}
-                disabled={loading || !img2imgPrompt.trim() || img2imgSources.length === 0}
-                className="w-full py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                生成图片
-              </button>
             </div>
+          )}
+        </div>
+
+        {/* 底部固定按钮 */}
+        <div className="flex-shrink-0 p-4 border-t border-runway-border bg-runway-surface">
+          {activeTab === 'text2img' ? (
+            <button onClick={onTextToImage} disabled={loading || !textToImagePrompt.trim()} className="w-full py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              生成图片
+            </button>
+          ) : (
+            <button onClick={onImageToImage} disabled={loading || !img2imgPrompt.trim() || img2imgSources.length === 0} className="w-full py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed">
+              生成图片
+            </button>
           )}
         </div>
       </div>
 
       {/* 右侧垫图展示区 */}
-      <div className="flex-1 flex flex-col min-w-0">
+      <div className="flex-1 flex flex-col min-w-0 p-6">
         <div className="flex items-center justify-between mb-3 flex-shrink-0">
           <div>
             <h3 className="text-base font-semibold text-white">准备垫图</h3>
-            <p className="text-xs text-runway-slate mt-0.5">已准备 {images.length} 张，生成视频时选择一张使用</p>
+            <p className="text-xs text-runway-slate mt-0.5">
+              已准备 {images.filter(i => !i.pending).length} 张，已选 {selectedPadIds.length}/9 张用于生成视频
+            </p>
           </div>
-          {images.length > 0 && (
-            <button
-              onClick={onNext}
-              disabled={!selectedImageId}
-              className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
-            >
-              下一步：配置参数
-              <ChevronRight className="w-4 h-4" />
-            </button>
-          )}
+          <button
+            onClick={onNext}
+            disabled={selectedPadIds.length === 0}
+            className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+          >
+            下一步：生成视频<ChevronRight className="w-4 h-4" />
+          </button>
         </div>
 
         <div className="flex-1 overflow-y-auto">
@@ -743,40 +669,34 @@ function PrepareStep({
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-3 content-start">
-              {images.map((img) => (
+              {images.map((img) => img.pending ? (
+                <div key={img.id} className="relative rounded-lg overflow-hidden border-2 border-runway-border aspect-video">
+                  <div className="absolute inset-0 bg-runway-surface shimmer-placeholder" />
+                  <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                    <Wand2 className="w-5 h-5 text-runway-slate animate-pulse" />
+                    <span className="text-xs text-runway-slate">AI 生成中...</span>
+                  </div>
+                </div>
+              ) : (
                 <div
                   key={img.id}
-                  onClick={() => onSelectImage(img.id)}
-                  className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
-                    selectedImageId === img.id
-                      ? 'border-white shadow-lg'
-                      : 'border-runway-border hover:border-runway-charcoal'
-                  }`}
+                  onClick={() => onTogglePadSelect(img.id)}
+                  className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${selectedPadIds.includes(img.id) ? 'border-white shadow-lg' : 'border-runway-border hover:border-runway-charcoal'}`}
                 >
-                  {img.aspectRatio ? (
-                    <div style={{ paddingBottom: `${(1 / img.aspectRatio) * 100}%` }} className="relative w-full">
-                      <img
-                        src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`}
-                        alt={img.label}
-                        className="absolute inset-0 w-full h-full object-contain bg-black"
-                      />
-                    </div>
-                  ) : (
-                    <img
-                      src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`}
-                      alt={img.label}
-                      className="w-full aspect-video object-cover"
-                    />
-                  )}
-                  {selectedImageId === img.id && (
+                  <div className="relative w-full aspect-video bg-black">
+                    <img src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`} alt={img.label} className="absolute inset-0 w-full h-full object-contain" />
+                  </div>
+                  {/* 选中角标 */}
+                  {selectedPadIds.includes(img.id) && (
                     <div className="absolute top-2 left-2 w-5 h-5 bg-white rounded-full flex items-center justify-center">
                       <Check className="w-3 h-3 text-black" />
                     </div>
                   )}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); onRemoveImage(img.id); }}
-                    className="absolute top-2 right-2 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center hover:bg-black/80"
-                  >
+                  {/* 未选中但已达9张时显示禁用遮罩 */}
+                  {!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9 && (
+                    <div className="absolute inset-0 bg-black/50" />
+                  )}
+                  <button onClick={(e) => { e.stopPropagation(); onRemoveImage(img.id); }} className="absolute top-2 right-2 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center hover:bg-black/80">
                     <X className="w-3 h-3 text-white" />
                   </button>
                   <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1">
@@ -792,212 +712,328 @@ function PrepareStep({
   );
 }
 
-// ==================== 步骤2：配置参数 ====================
-function ConfigureStep({
-  images,
-  selectedImageId,
-  selectedImage,
-  prompt,
-  useReferenceVideo,
-  referenceVideoUrl,
-  videoUrl,
-  loading,
-  onSelectImage,
-  onPromptChange,
-  onUseReferenceVideoChange,
-  onVideoUpload,
-  onGenerate,
-  onBack,
+// ==================== 步骤2：生成视频（Seedance 2.0）====================
+function GenerateStep({
+  images, selectedPadIds, onTogglePadSelect, onRemoveImage, onAddImage,
+  videoPrompt, videoDuration, videoResolution, videoRatio,
+  generateAudio, realPersonMode, useRefVideo, useRefAudio,
+  refVideoLocalUrl, refVideoUrl, refAudioLocalName, refAudioUrl,
+  generatedVideoUrl, videoGenerating, videoLoadingMsg, loading,
+  onVideoPromptChange, onVideoDurationChange, onVideoResolutionChange,
+  onVideoRatioChange, onGenerateAudioChange, onRealPersonModeChange,
+  onUseRefVideoChange, onUseRefAudioChange,
+  onRefVideoUpload, onRefAudioUpload, onGenerate, onBack,
 }: {
   images: PreparedImage[];
-  selectedImageId: string | null;
-  selectedImage: PreparedImage | undefined;
-  prompt: string;
-  useReferenceVideo: boolean;
-  referenceVideoUrl: string | null;
-  videoUrl: string | null;
+  selectedPadIds: string[];
+  onTogglePadSelect: (id: string) => void;
+  onRemoveImage: (id: string) => void;
+  onAddImage: (img: PreparedImage) => void;
+  videoPrompt: string;
+  videoDuration: string;
+  videoResolution: string;
+  videoRatio: string;
+  generateAudio: boolean;
+  realPersonMode: boolean;
+  useRefVideo: boolean;
+  useRefAudio: boolean;
+  refVideoLocalUrl: string | null;
+  refVideoUrl: string | null;
+  refAudioLocalName: string | null;
+  refAudioUrl: string | null;
+  generatedVideoUrl: string | null;
+  videoGenerating: boolean;
+  videoLoadingMsg: string;
   loading: boolean;
-  onSelectImage: (id: string) => void;
-  onPromptChange: (v: string) => void;
-  onUseReferenceVideoChange: (v: boolean) => void;
-  onVideoUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onVideoPromptChange: (v: string) => void;
+  onVideoDurationChange: (v: string) => void;
+  onVideoResolutionChange: (v: string) => void;
+  onVideoRatioChange: (v: string) => void;
+  onGenerateAudioChange: (v: boolean) => void;
+  onRealPersonModeChange: (v: boolean) => void;
+  onUseRefVideoChange: (v: boolean) => void;
+  onUseRefAudioChange: (v: boolean) => void;
+  onRefVideoUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  onRefAudioUpload: (e: React.ChangeEvent<HTMLInputElement>) => void;
   onGenerate: () => void;
   onBack: () => void;
 }) {
-  const videoInputRef = useRef<HTMLInputElement>(null!);
+  const refVideoInputRef = useRef<HTMLInputElement>(null!);
+  const refAudioInputRef = useRef<HTMLInputElement>(null!);
+  const localImageInputRef = useRef<HTMLInputElement>(null!);
+
+  const selectedImages = images.filter((img) => selectedPadIds.includes(img.id) && !img.pending);
 
   return (
-    <div className="max-w-4xl mx-auto space-y-6">
-      <h3 className="text-lg font-semibold text-white">配置生成参数</h3>
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="space-y-4">
-          <h4 className="text-sm font-medium text-runway-slate">选择垫图</h4>
-          <div className="grid grid-cols-2 gap-3">
-            {images.map((img) => (
-              <div
-                key={img.id}
-                onClick={() => onSelectImage(img.id)}
-                className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
-                  selectedImageId === img.id ? 'border-white shadow-lg' : 'border-runway-border hover:border-runway-charcoal'
-                }`}
-              >
-                <img
-                  src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`}
-                  alt={img.label}
-                  className="w-full aspect-video object-cover"
-                />
-                {selectedImageId === img.id && (
-                  <div className="absolute top-2 left-2 w-5 h-5 bg-white rounded-full flex items-center justify-center">
-                    <Check className="w-3 h-3 text-black" />
-                  </div>
-                )}
-              </div>
-            ))}
+    <div className="h-full flex gap-0 overflow-hidden">
+      {/* 左侧参数区 */}
+      <div className="w-96 flex-shrink-0 flex flex-col bg-runway-surface border-r border-runway-border h-full">
+        <div className="px-4 py-3 border-b border-runway-border flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <Film className="w-4 h-4 text-runway-slate" />
+            <span className="text-sm font-semibold text-white">Seedance 2.0</span>
+            <span className="text-xs text-runway-mid-slate ml-auto">图生视频</span>
           </div>
         </div>
-        <div className="space-y-5">
+
+        <div className="relative flex-1 min-h-0">
+          <div className="absolute inset-0 overflow-y-auto scrollbar-hidden p-4 space-y-4">
+          {/* 垫图选择区（缩略图 + 本地上传） */}
+          <div>            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-runway-slate">垫图（已选 {selectedPadIds.length}/9）</p>
+              <button onClick={onBack} className="text-xs text-runway-slate hover:text-white transition-colors">
+                ← 返回添加
+              </button>
+            </div>
+            <div className="border border-runway-border rounded-md p-2 bg-runway-black">
+              {selectedImages.length === 0 ? (
+                <p className="text-xs text-runway-mid-slate text-center py-4">请在上一步选择垫图，或点击 + 上传本地图片</p>
+              ) : (
+                <div className="grid grid-cols-3 gap-2">
+                  {selectedImages.map((img, idx) => (
+                    <div key={img.id} className="relative rounded-md overflow-hidden border border-runway-border group aspect-video bg-black">
+                      <img src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`} alt={img.label} className="w-full h-full object-contain" />
+                      {/* 序号 */}
+                      <div className="absolute top-1 left-1 w-5 h-5 bg-black/70 rounded-full flex items-center justify-center">
+                        <span className="text-xs font-bold text-white leading-none">{idx + 1}</span>
+                      </div>
+                      {/* 移除按钮 */}
+                      <button
+                        onClick={() => onTogglePadSelect(img.id)}
+                        className="absolute top-1 right-1 w-5 h-5 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80"
+                      >
+                        <X className="w-3 h-3 text-white" />
+                      </button>
+                    </div>
+                  ))}
+                  {/* 本地上传按钮 */}
+                  {selectedPadIds.length < 9 && (
+                    <>
+                      <input
+                        ref={localImageInputRef}
+                        type="file"
+                        accept="image/*"
+                        multiple
+                        className="hidden"
+                        onChange={async (e) => {
+                          const files = Array.from(e.target.files ?? []);
+                          if (files.length === 0) return;
+                          e.target.value = '';
+                          for (const file of files) {
+                            if (selectedPadIds.length >= 9) break;
+                            const result = await uploadImage(file);
+                            const newId = `local_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+                            const newImg: PreparedImage = { id: newId, url: result.url, source: 'frame', label: file.name.slice(0, 20) };
+                            onAddImage(newImg);
+                            onTogglePadSelect(newId);
+                          }
+                        }}
+                      />
+                      <button
+                        onClick={() => localImageInputRef.current?.click()}
+                        className="aspect-video rounded-md border border-dashed border-runway-border flex flex-col items-center justify-center gap-1 hover:border-runway-charcoal transition-colors"
+                      >
+                        <Upload className="w-4 h-4 text-runway-mid-slate" />
+                        <span className="text-xs text-runway-mid-slate">上传</span>
+                      </button>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* 提示词 */}
           <div>
-            <label className="block text-sm font-medium text-runway-slate mb-2">视频提示词</label>
+            <p className="text-xs text-runway-slate mb-2">视频提示词</p>
             <textarea
-              value={prompt}
-              onChange={(e) => onPromptChange(e.target.value)}
-              placeholder="描述你想要生成的视频效果..."
-              rows={4}
-              className="w-full bg-runway-surface border border-runway-border rounded-md px-4 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none"
+              value={videoPrompt}
+              onChange={(e) => onVideoPromptChange(e.target.value)}
+              placeholder="描述你想要生成的视频效果，例如：镜头缓慢推进，人物微笑转身..."
+              rows={5}
+              className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none"
             />
           </div>
+
+          {/* 时长 */}
           <div>
-            <label className="flex items-center gap-2 text-sm font-medium text-runway-slate mb-2 cursor-pointer">
-              <input
-                type="checkbox"
-                checked={useReferenceVideo}
-                onChange={(e) => onUseReferenceVideoChange(e.target.checked)}
-                className="rounded border-runway-border"
-              />
-              使用参考视频
-            </label>
-            {useReferenceVideo && (
-              <div className="mt-2">
-                <input ref={videoInputRef} type="file" accept="video/*" onChange={onVideoUpload} className="hidden" />
-                {referenceVideoUrl || videoUrl ? (
-                  <div className="bg-runway-surface border border-runway-border rounded-md p-3">
-                    <p className="text-xs text-runway-slate mb-1">已关联参考视频</p>
-                    {videoUrl && (
-                      <video src={videoUrl} controls className="w-full rounded-md" style={{ maxHeight: '120px' }} />
-                    )}
-                    <button
-                      onClick={() => videoInputRef.current?.click()}
-                      className="mt-2 text-xs text-runway-slate hover:text-white transition-colors"
-                    >
+            <p className="text-xs text-runway-slate mb-2">时长（秒）</p>
+            <div className="flex gap-2 flex-wrap">
+              {['4', '5', '6', '7', '8', '9', '10', '11', '12', '13', '14', '15'].map((d) => (
+                <button key={d} onClick={() => onVideoDurationChange(d)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${videoDuration === d ? 'bg-white text-black border-white' : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'}`}>
+                  {d}s
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 分辨率 */}
+          <div>
+            <p className="text-xs text-runway-slate mb-2">分辨率</p>
+            <div className="flex gap-2 flex-wrap">
+              {[
+                { value: '480p', label: '480p' },
+                { value: '720p', label: '720p' },
+                { value: 'native1080p', label: '原生1080p' },
+                { value: '1080p', label: '1080p↑' },
+                { value: '2k', label: '2K↑' },
+                { value: '4k', label: '4K↑' },
+              ].map((r) => (
+                <button key={r.value} onClick={() => onVideoResolutionChange(r.value)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${videoResolution === r.value ? 'bg-white text-black border-white' : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'}`}>
+                  {r.label}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 宽高比 */}
+          <div>
+            <p className="text-xs text-runway-slate mb-2">宽高比</p>
+            <div className="flex gap-2 flex-wrap">
+              {['adaptive', '16:9', '9:16', '1:1', '4:3', '3:4', '21:9'].map((r) => (
+                <button key={r} onClick={() => onVideoRatioChange(r)} className={`px-3 py-1.5 text-xs font-medium rounded-md transition-colors border ${videoRatio === r ? 'bg-white text-black border-white' : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'}`}>
+                  {r === 'adaptive' ? '自适应' : r}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          {/* 开关选项 */}
+          <div className="flex flex-col gap-0 border border-runway-border rounded-lg overflow-hidden">
+            <ToggleRow label="生成视频音频" checked={generateAudio} onChange={onGenerateAudioChange} />
+            <ToggleRow label="真人模式" checked={realPersonMode} onChange={onRealPersonModeChange} border />
+          </div>
+
+          {/* 参考视频 */}
+          <div className="border border-runway-border rounded-lg overflow-hidden">
+            <ToggleRow label="参考视频" checked={useRefVideo} onChange={onUseRefVideoChange} icon={<Video className="w-3.5 h-3.5" />} />
+            {useRefVideo && (
+              <div className="px-4 pb-4 pt-3 border-t border-runway-border bg-runway-black">
+                <input ref={refVideoInputRef} type="file" accept="video/*" onChange={onRefVideoUpload} className="hidden" />
+                {refVideoLocalUrl ? (
+                  <div className="space-y-2">
+                    <video src={refVideoLocalUrl} controls className="w-full rounded-md bg-black" style={{ maxHeight: '180px' }} />
+                    <button onClick={() => refVideoInputRef.current?.click()} className="text-xs text-runway-slate hover:text-white transition-colors">
                       更换视频
                     </button>
                   </div>
                 ) : (
-                  <button
-                    onClick={() => videoInputRef.current?.click()}
-                    className="w-full border-2 border-dashed border-runway-border rounded-md p-4 flex flex-col items-center gap-2 hover:border-runway-charcoal transition-colors"
-                  >
-                    <Film className="w-5 h-5 text-runway-mid-slate" />
+                  <button onClick={() => refVideoInputRef.current?.click()} className="w-full border border-dashed border-runway-border rounded-md p-5 flex flex-col items-center justify-center gap-2 hover:border-runway-charcoal transition-colors">
+                    <Upload className="w-5 h-5 text-runway-mid-slate" />
                     <span className="text-xs text-runway-mid-slate">点击上传参考视频</span>
                   </button>
                 )}
               </div>
             )}
           </div>
-          <div className="flex gap-3 pt-4">
-            <button
-              onClick={onBack}
-              className="px-5 py-2.5 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-            >
-              返回
-            </button>
-            <button
-              onClick={onGenerate}
-              disabled={loading || !selectedImage || !prompt.trim()}
-              className="flex-1 py-2.5 bg-white text-black font-medium text-sm rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
-            >
-              {loading ? (
-                <><Loader2 className="w-4 h-4 animate-spin" />生成中...</>
-              ) : (
-                <><Play className="w-4 h-4" />生成视频</>
-              )}
-            </button>
+
+          {/* 参考音频 */}
+          <div className="border border-runway-border rounded-lg overflow-hidden">
+            <ToggleRow label="参考音频" checked={useRefAudio} onChange={onUseRefAudioChange} icon={<Music className="w-3.5 h-3.5" />} />
+            {useRefAudio && (
+              <div className="px-4 pb-4 pt-3 border-t border-runway-border bg-runway-black">
+                <input ref={refAudioInputRef} type="file" accept="audio/*" onChange={onRefAudioUpload} className="hidden" />
+                {refAudioLocalName ? (
+                  <div className="bg-runway-surface border border-runway-border rounded-md p-4 flex items-center justify-between gap-3">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-9 h-9 rounded-full bg-runway-charcoal flex items-center justify-center flex-shrink-0">
+                        <Music className="w-4 h-4 text-runway-slate" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="text-xs text-white truncate block">{refAudioLocalName}</span>
+                        {!refAudioUrl
+                          ? <span className="text-xs text-runway-mid-slate flex items-center gap-1"><Loader2 className="w-3 h-3 animate-spin" />上传中...</span>
+                          : <span className="text-xs text-runway-mid-slate">已就绪</span>
+                        }
+                      </div>
+                    </div>
+                    <button onClick={() => refAudioInputRef.current?.click()} className="text-xs text-runway-slate hover:text-white transition-colors flex-shrink-0">
+                      更换
+                    </button>
+                  </div>
+                ) : (
+                  <button onClick={() => refAudioInputRef.current?.click()} className="w-full border border-dashed border-runway-border rounded-md p-5 flex flex-col items-center justify-center gap-2 hover:border-runway-charcoal transition-colors">
+                    <Music className="w-5 h-5 text-runway-mid-slate" />
+                    <span className="text-xs text-runway-mid-slate">点击上传参考音频</span>
+                    <span className="text-xs text-runway-mid-slate opacity-60">MP3、WAV、AAC、M4A</span>
+                  </button>
+                )}
+              </div>
+            )}
           </div>
+        </div>
+        </div>
+
+        {/* 底部固定按钮 */}
+        <div className="flex-shrink-0 p-4 border-t border-runway-border bg-runway-surface">
+          <button
+            onClick={onGenerate}
+            disabled={videoGenerating || loading || selectedPadIds.length === 0 || !videoPrompt.trim()}
+            className="w-full py-3 bg-white text-black font-medium text-sm rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+          >
+            {videoGenerating ? <><Loader2 className="w-4 h-4 animate-spin" />{videoLoadingMsg || '生成中...'}</> : <><Play className="w-4 h-4" />生成视频</>}
+          </button>
+        </div>
+      </div>
+
+      {/* 右侧视频输出区 */}
+      <div className="flex-1 flex flex-col min-w-0 p-6">
+        <div className="mb-3 flex-shrink-0">
+          <h3 className="text-base font-semibold text-white">生成结果</h3>
+          <p className="text-xs text-runway-slate mt-0.5">使用 Seedance 2.0 模型生成视频</p>
+        </div>
+
+        <div className="flex-1 flex items-center justify-center">
+          {videoGenerating ? (
+            <div className="w-full max-w-2xl">
+              <div className="relative w-full aspect-video bg-runway-surface border border-runway-border rounded-lg overflow-hidden">
+                <div className="absolute inset-0 shimmer-placeholder" />
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3">
+                  <Loader2 className="w-8 h-8 text-runway-slate animate-spin" />
+                  <p className="text-sm text-runway-slate">{videoLoadingMsg || '视频生成中...'}</p>
+                  <p className="text-xs text-runway-mid-slate">通常需要 2-5 分钟，请耐心等待</p>
+                </div>
+              </div>
+            </div>
+          ) : generatedVideoUrl ? (
+            <div className="w-full max-w-2xl space-y-4">
+              <video src={generatedVideoUrl} controls autoPlay className="w-full rounded-lg bg-black" />
+              <div className="flex gap-3">
+                <a href={generatedVideoUrl} target="_blank" rel="noopener noreferrer" className="px-5 py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors">
+                  下载视频
+                </a>
+                <button onClick={onGenerate} disabled={videoGenerating || selectedPadIds.length === 0 || !videoPrompt.trim()} className="px-5 py-2.5 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50">
+                  重新生成
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="w-full max-w-2xl border-2 border-dashed border-runway-border rounded-lg aspect-video flex flex-col items-center justify-center">
+              <Film className="w-10 h-10 text-runway-mid-slate mb-3" />
+              <p className="text-sm text-runway-mid-slate">配置左侧参数后点击生成视频</p>
+              {selectedPadIds.length === 0 && (
+                <p className="text-xs text-runway-mid-slate mt-1">请先在上一步选择垫图</p>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
   );
 }
 
-// ==================== 步骤3：生成结果 ====================
-function GenerateStep({
-  generatedVideoUrl,
-  loading,
-  loadingMsg,
-  onBack,
-}: {
-  generatedVideoUrl: string | null;
-  loading: boolean;
-  loadingMsg: string;
-  onBack: () => void;
-}) {
-  return (
-    <div className="max-w-3xl mx-auto space-y-6">
-      <h3 className="text-lg font-semibold text-white">生成结果</h3>
-      {loading ? (
-        <div className="bg-runway-surface border border-runway-border rounded-lg p-12 text-center">
-          <Loader2 className="w-8 h-8 animate-spin text-runway-slate mx-auto mb-4" />
-          <p className="text-sm text-runway-slate">{loadingMsg || '视频生成中...'}</p>
-          <p className="text-xs text-runway-mid-slate mt-2">通常需要 2-5 分钟，请耐心等待</p>
-        </div>
-      ) : generatedVideoUrl ? (
-        <div className="bg-runway-surface border border-runway-border rounded-lg p-6">
-          <video src={generatedVideoUrl} controls autoPlay className="w-full rounded-md bg-black" />
-          <div className="mt-4 flex gap-3">
-            <a
-              href={generatedVideoUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="px-5 py-2.5 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors"
-            >
-              下载视频
-            </a>
-            <button
-              onClick={onBack}
-              className="px-5 py-2.5 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-            >
-              重新生成
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="bg-runway-surface border border-runway-border rounded-lg p-12 text-center">
-          <Film className="w-8 h-8 text-runway-mid-slate mx-auto mb-3" />
-          <p className="text-sm text-runway-mid-slate">还没有生成视频</p>
-          <button
-            onClick={onBack}
-            className="mt-4 px-5 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-          >
-            返回配置
-          </button>
-        </div>
-      )}
-    </div>
-  );
-}
-
 // ==================== 比例选择器 ====================
-const ASPECT_RATIOS: { value: string; label: string; w: number; h: number }[] = [
-  { value: '1:1',  label: '1:1',  w: 1,  h: 1  },
-  { value: '16:9', label: '16:9', w: 16, h: 9  },
-  { value: '9:16', label: '9:16', w: 9,  h: 16 },
-  { value: '4:3',  label: '4:3',  w: 4,  h: 3  },
-  { value: '3:4',  label: '3:4',  w: 3,  h: 4  },
-  { value: '3:2',  label: '3:2',  w: 3,  h: 2  },
-  { value: '2:3',  label: '2:3',  w: 2,  h: 3  },
-  { value: '5:4',  label: '5:4',  w: 5,  h: 4  },
-  { value: '4:5',  label: '4:5',  w: 4,  h: 5  },
-  { value: '21:9', label: '21:9', w: 21, h: 9  },
+const ASPECT_RATIOS = [
+  { value: '1:1', label: '1:1', w: 1, h: 1 },
+  { value: '16:9', label: '16:9', w: 16, h: 9 },
+  { value: '9:16', label: '9:16', w: 9, h: 16 },
+  { value: '4:3', label: '4:3', w: 4, h: 3 },
+  { value: '3:4', label: '3:4', w: 3, h: 4 },
+  { value: '3:2', label: '3:2', w: 3, h: 2 },
+  { value: '2:3', label: '2:3', w: 2, h: 3 },
+  { value: '5:4', label: '5:4', w: 5, h: 4 },
+  { value: '4:5', label: '4:5', w: 4, h: 5 },
+  { value: '21:9', label: '21:9', w: 21, h: 9 },
 ];
 
 function AspectRatioIcon({ w, h }: { w: number; h: number }) {
@@ -1007,16 +1043,7 @@ function AspectRatioIcon({ w, h }: { w: number; h: number }) {
   const rh = ratio <= 1 ? maxSize : Math.round(maxSize / ratio);
   return (
     <svg width="20" height="20" viewBox="0 0 20 20" className="flex-shrink-0">
-      <rect
-        x={(20 - rw) / 2}
-        y={(20 - rh) / 2}
-        width={rw}
-        height={rh}
-        rx="1"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="1.5"
-      />
+      <rect x={(20 - rw) / 2} y={(20 - rh) / 2} width={rw} height={rh} rx="1" fill="none" stroke="currentColor" strokeWidth="1.5" />
     </svg>
   );
 }
@@ -1027,15 +1054,7 @@ function AspectRatioSelector({ value, onChange }: { value: string; onChange: (v:
       <p className="text-xs text-runway-slate mb-2">比例</p>
       <div className="grid grid-cols-4 gap-1.5">
         {ASPECT_RATIOS.map((r) => (
-          <button
-            key={r.value}
-            onClick={() => onChange(r.value)}
-            className={`flex flex-col items-center gap-1 py-2 px-1 rounded-md text-xs transition-colors border ${
-              value === r.value
-                ? 'bg-white text-black border-white'
-                : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'
-            }`}
-          >
+          <button key={r.value} onClick={() => onChange(r.value)} className={`flex flex-col items-center gap-1 py-2 px-1 rounded-md text-xs transition-colors border ${value === r.value ? 'bg-white text-black border-white' : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'}`}>
             <AspectRatioIcon w={r.w} h={r.h} />
             <span className="leading-none">{r.label}</span>
           </button>
@@ -1045,28 +1064,13 @@ function AspectRatioSelector({ value, onChange }: { value: string; onChange: (v:
   );
 }
 
-// ==================== 分辨率选择器 ====================
-function ResolutionSelector({
-  value,
-  onChange,
-}: {
-  value: '1k' | '2k' | '4k';
-  onChange: (v: '1k' | '2k' | '4k') => void;
-}) {
+function ResolutionSelector({ value, onChange }: { value: '1k' | '2k' | '4k'; onChange: (v: '1k' | '2k' | '4k') => void }) {
   return (
     <div>
       <p className="text-xs text-runway-slate mb-2">分辨率</p>
       <div className="flex gap-2">
         {(['1k', '2k', '4k'] as const).map((r) => (
-          <button
-            key={r}
-            onClick={() => onChange(r)}
-            className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors border ${
-              value === r
-                ? 'bg-white text-black border-white'
-                : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'
-            }`}
-          >
+          <button key={r} onClick={() => onChange(r)} className={`flex-1 py-2 text-sm font-medium rounded-md transition-colors border ${value === r ? 'bg-white text-black border-white' : 'border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal'}`}>
             {r.toUpperCase()}
           </button>
         ))}
@@ -1075,36 +1079,53 @@ function ResolutionSelector({
   );
 }
 
-// ==================== 模型选择器（下拉框） ====================
 const IMAGE_MODELS: { value: ImageModel; label: string }[] = [
-  { value: 'g',   label: 'GPT-Image-2' },
-  { value: 'v2',  label: 'Nano Banana V2' },
+  { value: 'g', label: 'GPT-Image-2' },
+  { value: 'v2', label: 'Nano Banana V2' },
   { value: 'pro', label: 'Nano Banana Pro' },
 ];
 
-function ModelSelector({
-  label,
-  value,
-  onChange,
-}: {
-  label: string;
-  value: ImageModel;
-  onChange: (v: ImageModel) => void;
-}) {
+function ModelSelector({ label, value, onChange }: { label: string; value: ImageModel; onChange: (v: ImageModel) => void }) {
   return (
     <div>
       <p className="text-xs text-runway-slate mb-2">{label}</p>
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value as ImageModel)}
-        className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-runway-charcoal appearance-none cursor-pointer"
-      >
+      <select value={value} onChange={(e) => onChange(e.target.value as ImageModel)} className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-2 text-sm text-white focus:outline-none focus:border-runway-charcoal appearance-none cursor-pointer">
         {IMAGE_MODELS.map((m) => (
-          <option key={m.value} value={m.value} className="bg-runway-black text-white">
-            {m.label}
-          </option>
+          <option key={m.value} value={m.value} className="bg-runway-black text-white">{m.label}</option>
         ))}
       </select>
     </div>
+  );
+}
+
+// ==================== Toggle 开关行 ====================
+function ToggleRow({
+  label,
+  checked,
+  onChange,
+  icon,
+  border,
+}: {
+  label: string;
+  checked: boolean;
+  onChange: (v: boolean) => void;
+  icon?: React.ReactNode;
+  border?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={() => onChange(!checked)}
+      className={`w-full flex items-center justify-between px-4 py-3 bg-runway-surface hover:bg-runway-deep transition-colors ${border ? 'border-t border-runway-border' : ''}`}
+    >
+      <div className="flex items-center gap-2">
+        {icon && <span className="text-runway-slate">{icon}</span>}
+        <span className="text-xs text-runway-slate">{label}</span>
+      </div>
+      {/* Toggle pill */}
+      <div className={`relative w-9 h-5 rounded-full transition-colors duration-200 flex-shrink-0 ${checked ? 'bg-white' : 'bg-runway-charcoal'}`}>
+        <div className={`absolute top-0.5 w-4 h-4 rounded-full shadow transition-all duration-200 ${checked ? 'left-[18px] bg-black' : 'left-0.5 bg-runway-slate'}`} />
+      </div>
+    </button>
   );
 }

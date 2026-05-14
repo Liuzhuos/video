@@ -10,6 +10,7 @@ import {
   getTaskOutput,
   createImageToImageTask,
   waitForImageToImageResult,
+  createSeedance2Task,
   type ImageModel,
 } from '../services/runninghub';
 
@@ -59,6 +60,30 @@ const imageUpload = multer({
       cb(null, true);
     } else {
       cb(new Error('仅支持 JPG、PNG、WebP 格式的图片'));
+    }
+  },
+});
+
+// 音频上传配置
+const audioStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => {
+    cb(null, 'uploads/');
+  },
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `audio_${Date.now()}${ext}`);
+  },
+});
+
+const audioUpload = multer({
+  storage: audioStorage,
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+  fileFilter: (_req, file, cb) => {
+    const allowedTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-m4a'];
+    if (allowedTypes.includes(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error('仅支持 MP3、WAV、OGG、AAC、FLAC、M4A 格式的音频'));
     }
   },
 });
@@ -231,5 +256,86 @@ fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   } catch (error: any) {
     console.error('[裂变-任务查询] 错误:', error);
     res.status(500).json({ error: error.message || '查询任务状态失败' });
+  }
+});
+
+// POST /api/fission/upload-audio - 上传音频（用于 Seedance 2.0）
+fissionRouter.post('/upload-audio', audioUpload.single('audio'), (req: Request, res: Response) => {
+  if (!req.file) {
+    res.status(400).json({ error: '请上传音频文件' });
+    return;
+  }
+  res.json({
+    url: `/uploads/${req.file.filename}`,
+    filename: req.file.filename,
+    originalName: req.file.originalname,
+    size: req.file.size,
+  });
+});
+
+// POST /api/fission/seedance2 - Seedance 2.0 图生视频
+fissionRouter.post('/seedance2', async (req: Request, res: Response) => {
+  try {
+    const {
+      imageUrls,
+      videoUrls,
+      audioUrls,
+      prompt,
+      duration,
+      resolution,
+      ratio,
+      generateAudio,
+      realPersonMode,
+    } = req.body;
+
+    if (!prompt) {
+      res.status(400).json({ error: '请提供视频提示词' });
+      return;
+    }
+
+    if (!resolution) {
+      res.status(400).json({ error: '请选择视频分辨率' });
+      return;
+    }
+
+    if (!duration) {
+      res.status(400).json({ error: '请选择视频时长' });
+      return;
+    }
+
+    // 过滤有效公网 URL
+    const validImageUrls = Array.isArray(imageUrls)
+      ? imageUrls.filter((u: string) => u.startsWith('http')).slice(0, 9)
+      : [];
+    const validVideoUrls = Array.isArray(videoUrls)
+      ? videoUrls.filter((u: string) => u.startsWith('http')).slice(0, 3)
+      : [];
+    const validAudioUrls = Array.isArray(audioUrls)
+      ? audioUrls.filter((u: string) => u.startsWith('http') || u.startsWith('/uploads')).slice(0, 3)
+      : [];
+
+    if (validImageUrls.length === 0 && validVideoUrls.length === 0) {
+      res.status(400).json({ error: '请至少提供一张垫图或一个参考视频（需要公网 URL）' });
+      return;
+    }
+
+    console.log(`[Seedance2] 垫图: ${validImageUrls.length}张, 参考视频: ${validVideoUrls.length}个, 音频: ${validAudioUrls.length}个`);
+
+    const taskId = await createSeedance2Task({
+      prompt,
+      resolution,
+      duration,
+      imageUrls: validImageUrls.length > 0 ? validImageUrls : undefined,
+      videoUrls: validVideoUrls.length > 0 ? validVideoUrls : undefined,
+      audioUrls: validAudioUrls.length > 0 ? validAudioUrls : undefined,
+      generateAudio: generateAudio !== undefined ? Boolean(generateAudio) : undefined,
+      ratio: ratio || undefined,
+      realPersonMode: realPersonMode !== undefined ? Boolean(realPersonMode) : undefined,
+    });
+
+    res.json({ taskId, status: 'running' });
+  } catch (error: any) {
+    console.error('[Seedance2] 错误:', error);
+    res.status(500).json({ error: error.message || 'Seedance2 视频生成失败' });
   }
 });

@@ -446,3 +446,107 @@ export async function waitForVideoResult(
 
   throw new Error('视频任务超时（10分钟），请稍后重试');
 }
+
+// ==================== Seedance 2.0 ====================
+
+export interface Seedance2Params {
+  /** 视频提示词（必填，1-20480字符） */
+  prompt: string;
+  /** 视频分辨率（必填）: 480p | 720p | native1080p | 1080p | 2k | 4k */
+  resolution: string;
+  /** 视频时长（必填，秒）: 4-15 */
+  duration: string;
+  /** 参考图片 URL 列表（可选，最多9张） */
+  imageUrls?: string[];
+  /** 参考视频 URL 列表（可选，最多3个） */
+  videoUrls?: string[];
+  /** 参考音频 URL 列表（可选，最多3个） */
+  audioUrls?: string[];
+  /** 是否生成视频音频（可选） */
+  generateAudio?: boolean;
+  /** 视频宽高比（可选）: adaptive | 16:9 | 4:3 | 1:1 | 3:4 | 9:16 | 21:9 */
+  ratio?: string;
+  /** 真人模式（可选） */
+  realPersonMode?: boolean;
+}
+
+/**
+ * 创建 Seedance 2.0 多模态视频任务
+ * 接口: POST /rhart-video/sparkvideo-2.0/multimodal-video
+ */
+export async function createSeedance2Task(params: Seedance2Params): Promise<string> {
+  const apiKey = getApiKey();
+
+  const body: Record<string, any> = {
+    prompt: params.prompt,
+    resolution: params.resolution,
+    duration: params.duration,
+  };
+
+  if (params.imageUrls && params.imageUrls.length > 0) body.imageUrls = params.imageUrls;
+  if (params.videoUrls && params.videoUrls.length > 0) body.videoUrls = params.videoUrls;
+  if (params.audioUrls && params.audioUrls.length > 0) body.audioUrls = params.audioUrls;
+  if (params.generateAudio !== undefined) body.generateAudio = params.generateAudio;
+  if (params.ratio) body.ratio = params.ratio;
+  if (params.realPersonMode !== undefined) body.realPersonMode = params.realPersonMode;
+
+  console.log('[RunningHub] Seedance2 请求体:', JSON.stringify(body, null, 2));
+
+  const response = await fetch(`${BASE_URL}/rhart-video/sparkvideo-2.0/multimodal-video`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`Seedance2 请求失败 (${response.status}): ${text}`);
+  }
+
+  const result: any = await response.json();
+  console.log('[RunningHub] Seedance2 响应:', JSON.stringify(result, null, 2));
+
+  const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
+  if (!taskId) {
+    const msg = result.errorMessage ?? result.msg ?? result.message ?? JSON.stringify(result);
+    throw new Error(`创建 Seedance2 任务失败: ${msg}`);
+  }
+
+  return taskId;
+}
+
+/**
+ * 轮询等待 Seedance 2.0 任务完成并返回视频 URL
+ */
+export async function waitForSeedance2Result(
+  taskId: string,
+  maxWaitMs = 10 * 60 * 1000,
+  intervalMs = 5000
+): Promise<string> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const status = await checkTaskStatus(taskId);
+
+    if (status === 'SUCCESS' || status === 'COMPLETED') {
+      const outputs = await getTaskOutput(taskId);
+      const videoOutput = outputs.find((o) =>
+        ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType?.toLowerCase() ?? '')
+      );
+      if (videoOutput) return videoOutput.fileUrl;
+      if (outputs.length > 0) return outputs[0].fileUrl;
+      throw new Error('Seedance2 任务完成但没有视频输出');
+    }
+
+    if (status === 'FAILED' || status === 'ERROR') {
+      throw new Error('Seedance2 任务执行失败');
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('Seedance2 任务超时（10分钟），请稍后重试');
+}

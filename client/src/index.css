@@ -99,6 +99,15 @@
   background: #3f3f3f;
 }
 
+/* Hide scrollbar but keep scrollable */
+.scrollbar-hidden::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hidden {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 /* Prose overrides for dark theme */
 .prose-runway {
   color: #c9ccd1;
@@ -133,4 +142,25 @@
   color: #ffffff;
   text-decoration: underline;
   text-decoration-color: #767d88;
+}
+
+/* Shimmer placeholder animation for image generation */
+@keyframes shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.shimmer-placeholder {
+  background: linear-gradient(
+    90deg,
+    #1a1a1a 25%,
+    #2a2a2a 37%,
+    #1a1a1a 63%
+  );
+  background-size: 200% 100%;
+  animation: shimmer 1.8s ease-in-out infinite;
 }
