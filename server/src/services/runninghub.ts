@@ -1,7 +1,19 @@
 /**
- * RunningHub Standard Model API 服务
- * 全能图片G2: /openapi/v2/rhart-image-g-2/text-to-image
+ * RunningHub Standard Model API 服务（廉价版）
+ *
+ * 文生图端点（channel-low-price）：
+ *   全能图片G  (gpt-image-2):        /openapi/v2/rhart-image-g-2/text-to-image
+ *   全能图片V2 (nano-banana2-flash):  /openapi/v2/rhart-image-n-g31-flash/text-to-image
+ *   全能图片pro(nano-banana-pro):     /openapi/v2/rhart-image-n-pro/text-to-image
+ *
+ * 图生图端点（channel-low-price）：
+ *   全能图片G  (gpt-image-2):        /openapi/v2/rhart-image-g-2/image-to-image
+ *   全能图片V2 (nano-banana2-flash):  /openapi/v2/rhart-image-n-g31-flash/image-to-image
+ *   全能图片pro(nano-banana-pro):     /openapi/v2/rhart-image-n-pro/edit
  */
+
+/** 图片生成模型类型 */
+export type ImageModel = 'g' | 'v2' | 'pro';
 
 const BASE_URL = process.env.RUNNINGHUB_BASE_URL || 'https://www.runninghub.cn';
 
@@ -21,19 +33,43 @@ export interface TaskOutputItem {
   consumeCoins?: string;
 }
 
-/**
- * 调用全能图片G2 文生图
- */
-export async function createTextToImageTask(prompt: string): Promise<string> {
-  const apiKey = getApiKey();
+/** 各模型文生图廉价版端点 */
+const TEXT_TO_IMAGE_ENDPOINTS: Record<ImageModel, string> = {
+  g:   '/openapi/v2/rhart-image-g-2/text-to-image',
+  v2:  '/openapi/v2/rhart-image-n-g31-flash/text-to-image',
+  pro: '/openapi/v2/rhart-image-n-pro/text-to-image',
+};
 
-  const response = await fetch(`${BASE_URL}/openapi/v2/rhart-image-g-2/text-to-image`, {
+/** 各模型图生图廉价版端点 */
+const IMAGE_TO_IMAGE_ENDPOINTS: Record<ImageModel, string> = {
+  g:   '/openapi/v2/rhart-image-g-2/image-to-image',
+  v2:  '/openapi/v2/rhart-image-n-g31-flash/image-to-image',
+  pro: '/openapi/v2/rhart-image-n-pro/edit',
+};
+
+/**
+ * 调用文生图（廉价版，支持模型选择）
+ * @param model 模型：'g' 全能图片G | 'v2' 全能图片V2 | 'pro' 全能图片pro，默认 'g'
+ */
+export async function createTextToImageTask(
+  prompt: string,
+  aspectRatio: string = '16:9',
+  resolution: '1k' | '2k' | '4k' = '1k',
+  model: ImageModel = 'g'
+): Promise<string> {
+  const apiKey = getApiKey();
+  const endpoint = TEXT_TO_IMAGE_ENDPOINTS[model];
+
+  const requestBody = { prompt, aspectRatio, resolution };
+  console.log(`[RunningHub] 文生图请求 (model=${model}):`, JSON.stringify(requestBody, null, 2));
+
+  const response = await fetch(`${BASE_URL}${endpoint}`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${apiKey}`,
     },
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify(requestBody),
   });
 
   if (!response.ok) {
@@ -44,9 +80,9 @@ export async function createTextToImageTask(prompt: string): Promise<string> {
   const result: any = await response.json();
   console.log('[RunningHub] 文生图响应:', JSON.stringify(result, null, 2));
 
-  // 兼容多种返回格式
-  const taskId = result.data?.taskId ?? result.taskId ?? result.data?.task_id;
-  const msg = result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
+  // Standard Model API 直接返回 taskId
+  const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
+  const msg = result.errorMessage ?? result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
 
   if (!taskId) {
     throw new Error(`创建任务失败: ${msg}`);
@@ -148,6 +184,176 @@ export async function waitForTaskResult(
   throw new Error('任务超时（5分钟），请稍后重试');
 }
 
+
+/**
+ * 轮询等待文生图任务完成并返回图片 URL（使用新版 V2 查询）
+ */
+export async function waitForTextToImageResult(
+  taskId: string,
+  maxWaitMs = 5 * 60 * 1000,
+  intervalMs = 3000
+): Promise<string> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const result = await queryV2Task(taskId);
+
+    if (result.status === 'SUCCESS') {
+      const imageResult = result.results?.find(
+        (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.[0];
+
+      if (imageResult?.url) {
+        return imageResult.url;
+      }
+      throw new Error('文生图任务完成但没有输出图片');
+    }
+
+    if (result.status === 'FAILED') {
+      throw new Error(`文生图任务失败: ${result.errorMessage || '未知错误'}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('文生图任务超时（5分钟），请稍后重试');
+}
+
+/**
+ * 使用新版 /openapi/v2/query 查询任务状态和结果（Standard Model API 专用）
+ */
+export interface V2QueryResult {
+  taskId: string;
+  status: 'QUEUED' | 'RUNNING' | 'SUCCESS' | 'FAILED' | string;
+  errorCode: string;
+  errorMessage: string;
+  results: Array<{ url: string | null; outputType: string | null; text: string | null }> | null;
+}
+
+export async function queryV2Task(taskId: string): Promise<V2QueryResult> {
+  const apiKey = getApiKey();
+
+  const response = await fetch(`${BASE_URL}/openapi/v2/query`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ taskId }),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`查询任务失败 (${response.status}): ${text}`);
+  }
+
+  const result = await response.json() as V2QueryResult;
+  console.log('[RunningHub V2 Query]', JSON.stringify(result));
+  return result;
+}
+
+/**
+ * 调用图生图（廉价版，支持模型选择）
+ * @param model 模型：'g' 全能图片G | 'v2' 全能图片V2 | 'pro' 全能图片pro，默认 'g'
+ */
+export async function createImageToImageTask(
+  imageUrls: string[],
+  prompt: string,
+  aspectRatio: string = '16:9',
+  resolution: '1k' | '2k' | '4k' = '1k',
+  model: ImageModel = 'g'
+): Promise<string> {
+  const apiKey = getApiKey();
+  const endpoint = IMAGE_TO_IMAGE_ENDPOINTS[model];
+
+  // pro 模型不支持 quality 参数，g/v2 也不需要（廉价版无此参数）
+  const requestBody = { prompt, imageUrls, aspectRatio, resolution };
+  console.log(`[RunningHub] 图生图请求 (model=${model}):`, JSON.stringify(requestBody, null, 2));
+
+  const response = await fetch(`${BASE_URL}${endpoint}`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify(requestBody),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    throw new Error(`图生图请求失败 (${response.status}): ${text}`);
+  }
+
+  const result: any = await response.json();
+  console.log('[RunningHub] 图生图响应:', JSON.stringify(result, null, 2));
+
+  const taskId = result.taskId ?? result.data?.taskId;
+  if (!taskId) {
+    const msg = result.errorMessage ?? result.msg ?? JSON.stringify(result);
+    throw new Error(`创建图生图任务失败: ${msg}`);
+  }
+
+  return taskId;
+}
+
+/**
+ * 轮询等待图生图任务完成并返回图片 URL
+ */
+export async function waitForImageToImageResult(
+  taskId: string,
+  maxWaitMs = 5 * 60 * 1000,
+  intervalMs = 3000
+): Promise<string> {
+  const startTime = Date.now();
+
+  while (Date.now() - startTime < maxWaitMs) {
+    const result = await queryV2Task(taskId);
+
+    if (result.status === 'SUCCESS') {
+      const imageResult = result.results?.find(
+        (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.[0];
+
+      if (imageResult?.url) {
+        return imageResult.url;
+      }
+      throw new Error('图生图任务完成但没有输出图片');
+    }
+
+    if (result.status === 'FAILED') {
+      throw new Error(`图生图任务失败: ${result.errorMessage || '未知错误'}`);
+    }
+
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+
+  throw new Error('图生图任务超时（5分钟），请稍后重试');
+}
+
+/**
+ * @deprecated 请使用 createImageToImageTask 代替
+ * 保留此函数以兼容旧代码
+ */
+export async function createGptImage2Task(
+  imageUrls: string[],
+  prompt: string,
+  aspectRatio: string = '16:9',
+  resolution: '1k' | '2k' | '4k' = '1k',
+  _quality: 'low' | 'medium' | 'high' = 'medium'
+): Promise<string> {
+  return createImageToImageTask(imageUrls, prompt, aspectRatio, resolution, 'g');
+}
+
+/**
+ * @deprecated 请使用 waitForImageToImageResult 代替
+ */
+export async function waitForGptImage2Result(
+  taskId: string,
+  maxWaitMs = 5 * 60 * 1000,
+  intervalMs = 3000
+): Promise<string> {
+  return waitForImageToImageResult(taskId, maxWaitMs, intervalMs);
+}
 
 /**
  * 调用全能视频G (reference-to-video) 生成视频

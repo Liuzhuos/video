@@ -3,11 +3,14 @@ import multer from 'multer';
 import path from 'path';
 import {
   createTextToImageTask,
-  waitForTaskResult,
+  waitForTextToImageResult,
   createReferenceToVideoTask,
   waitForVideoResult,
   checkTaskStatus,
   getTaskOutput,
+  createImageToImageTask,
+  waitForImageToImageResult,
+  type ImageModel,
 } from '../services/runninghub';
 
 export const fissionRouter = Router();
@@ -91,17 +94,23 @@ fissionRouter.post('/upload-frame', imageUpload.single('image'), (req: Request, 
 // POST /api/fission/text-to-image - 文生图
 fissionRouter.post('/text-to-image', async (req: Request, res: Response) => {
   try {
-    const { prompt } = req.body;
+    const { prompt, aspectRatio, resolution, model } = req.body;
 
     if (!prompt) {
       res.status(400).json({ error: '请提供图片生成提示词' });
       return;
     }
 
-    console.log(`[裂变-文生图] prompt: ${prompt}`);
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+    console.log(`[裂变-文生图] model: ${imageModel}, prompt: ${prompt}, aspectRatio: ${aspectRatio}, resolution: ${resolution}`);
 
-    const taskId = await createTextToImageTask(prompt);
-    const imageUrl = await waitForTaskResult(taskId);
+    const taskId = await createTextToImageTask(
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
+    const imageUrl = await waitForTextToImageResult(taskId);
 
     res.json({
       url: imageUrl,
@@ -114,23 +123,33 @@ fissionRouter.post('/text-to-image', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/fission/image-to-image - 图生图
+// POST /api/fission/image-to-image - 图生图（廉价版，支持模型选择）
 fissionRouter.post('/image-to-image', async (req: Request, res: Response) => {
   try {
-    const { imageUrl, prompt } = req.body;
+    const { imageUrl, prompt, aspectRatio, resolution, model } = req.body;
 
     if (!imageUrl || !prompt) {
       res.status(400).json({ error: '请提供源图片URL和提示词' });
       return;
     }
 
-    console.log(`[裂变-图生图] imageUrl: ${imageUrl}, prompt: ${prompt}`);
+    // 必须是公网 URL
+    if (!imageUrl.startsWith('http')) {
+      res.status(400).json({ error: '源图片必须是公网URL' });
+      return;
+    }
 
-    // 使用文生图接口，将图片URL和提示词组合
-    // RunningHub 的图生图可以通过在 prompt 中引用图片来实现
-    const combinedPrompt = `${prompt}`;
-    const taskId = await createTextToImageTask(combinedPrompt);
-    const resultUrl = await waitForTaskResult(taskId);
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+    console.log(`[裂变-图生图] model: ${imageModel}, imageUrl: ${imageUrl}, prompt: ${prompt}`);
+
+    const taskId = await createImageToImageTask(
+      [imageUrl],
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
+    const resultUrl = await waitForImageToImageResult(taskId);
 
     res.json({
       url: resultUrl,

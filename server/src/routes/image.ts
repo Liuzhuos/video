@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import { createTextToImageTask, waitForTaskResult } from '../services/runninghub';
+import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, type ImageModel } from '../services/runninghub';
 
 export const imageRouter = Router();
 
@@ -44,24 +44,28 @@ imageRouter.post('/upload', upload.single('image'), (req: Request, res: Response
   });
 });
 
-// POST /api/image/generate - 文生图（调用 RunningHub 全能图片G2）
+// POST /api/image/generate - 文生图（调用 RunningHub 全能图片，支持模型选择）
 imageRouter.post('/generate', async (req: Request, res: Response) => {
   try {
-    const { prompt, sceneId } = req.body;
+    const { prompt, sceneId, aspectRatio, resolution, model } = req.body;
 
     if (!prompt) {
       res.status(400).json({ error: '请提供图片生成提示词' });
       return;
     }
 
-    console.log(`[文生图] 场景 ${sceneId}, prompt: ${prompt}`);
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+    console.log(`[文生图] 场景 ${sceneId}, model: ${imageModel}, prompt: ${prompt}`);
 
-    // 1. 创建任务
-    const taskId = await createTextToImageTask(prompt);
+    const taskId = await createTextToImageTask(
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
     console.log(`[文生图] 任务已创建: ${taskId}`);
 
-    // 2. 轮询等待结果
-    const imageUrl = await waitForTaskResult(taskId);
+    const imageUrl = await waitForTextToImageResult(taskId);
     console.log(`[文生图] 生成完成: ${imageUrl}`);
 
     res.json({
