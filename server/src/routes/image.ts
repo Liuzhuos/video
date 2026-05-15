@@ -37,6 +37,30 @@ imageRouter.post('/upload', upload.single('image'), async (req: Request, res: Re
   }
 });
 
+// GET /api/image/proxy - 代理外部图片（解决 CORS 问题）
+imageRouter.get('/proxy', async (req: Request, res: Response) => {
+  const url = req.query.url as string;
+  if (!url || !url.startsWith('http')) {
+    res.status(400).json({ error: '无效的 URL' });
+    return;
+  }
+  try {
+    const response = await fetch(url);
+    if (!response.ok) {
+      res.status(response.status).json({ error: '获取图片失败' });
+      return;
+    }
+    const contentType = response.headers.get('content-type') || 'image/png';
+    const buffer = Buffer.from(await response.arrayBuffer());
+    res.setHeader('Content-Type', contentType);
+    res.setHeader('Cache-Control', 'public, max-age=3600');
+    res.send(buffer);
+  } catch (err: any) {
+    console.error('[图片代理] 失败:', err.message);
+    res.status(500).json({ error: '图片代理失败' });
+  }
+});
+
 // POST /api/image/generate - 文生图（调用 RunningHub 全能图片，支持模型选择）
 imageRouter.post('/generate', async (req: Request, res: Response) => {
   try {

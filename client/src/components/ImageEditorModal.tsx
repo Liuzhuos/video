@@ -41,6 +41,14 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   const resolvedUrl = imageUrl.startsWith('http') ? imageUrl : `http://localhost:3001${imageUrl}`;
   const resolvedOriginalUrl = originalUrl.startsWith('http') ? originalUrl : `http://localhost:3001${originalUrl}`;
 
+  // 通过代理加载图片避免 CORS 问题
+  const proxyUrl = (url: string) => {
+    if (url.startsWith('http')) {
+      return `/api/image/proxy?url=${encodeURIComponent(url)}`;
+    }
+    return `http://localhost:3001${url}`;
+  };
+
   // 将指定 URL 的图片绘制到 base canvas，并清空 overlay
   const loadImageToCanvas = useCallback((url: string, resetHistory = false) => {
     const canvas = canvasRef.current;
@@ -69,7 +77,27 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
         setCanUndo(false);
       }
     };
-    img.src = url;
+    img.onerror = () => {
+      // CORS 失败时不带 crossOrigin 重试（仅用于显示，保存时走 fetch）
+      const img2 = new Image();
+      img2.onload = () => {
+        const maxW = 800;
+        const maxH = 560;
+        let w = img2.naturalWidth;
+        let h = img2.naturalHeight;
+        if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+        if (h > maxH) { w = Math.round(w * maxH / h); h = maxH; }
+        canvas.width = w;
+        canvas.height = h;
+        overlay.width = w;
+        overlay.height = h;
+        canvas.getContext('2d')!.drawImage(img2, 0, 0, w, h);
+        overlay.getContext('2d')!.clearRect(0, 0, w, h);
+        if (resetHistory) { history.current = []; setCanUndo(false); }
+      };
+      img2.src = url;
+    };
+    img.src = proxyUrl(url);
   }, []);
 
   // 初始化：加载当前图片
