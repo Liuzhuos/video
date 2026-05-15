@@ -465,6 +465,9 @@ function CaptureFrameModal({
 export default function FissionPage() {
   const [step, setStep] = useState<FissionStep>('prepare');
 
+  // 准备垫图 tab 状态（提升到父组件以保留切换步骤后的状态）
+  const [prepareTab, setPrepareTab] = useState<'text2img' | 'img2img'>('text2img');
+
   // 垫图列表
   const [images, setImages] = useState<PreparedImage[]>([]);
   // 准备垫图步骤中选中的图片（多选，最多9张）
@@ -831,14 +834,10 @@ export default function FissionPage() {
           <button onClick={() => setError(null)}><X className="w-4 h-4" /></button>
         </div>
       )}
-      {loading && (
-        <div className="mx-6 mt-3 p-3 bg-blue-500/10 border border-blue-500/30 rounded-md text-blue-400 text-sm flex items-center gap-2 flex-shrink-0">
-          <Loader2 className="w-4 h-4 animate-spin" /><span>{loadingMsg}</span>
-        </div>
-      )}
+
 
       <div className="flex-1 min-h-0 overflow-hidden">
-        {step === 'prepare' && (
+        <div className={step === 'prepare' ? 'h-full' : 'hidden'}>
           <PrepareStep
             images={images}
             selectedPadIds={selectedPadIds}
@@ -850,6 +849,9 @@ export default function FissionPage() {
             t2iModel={t2iModel}
             i2iModel={i2iModel}
             loading={loading}
+            loadingMsg={loadingMsg}
+            activeTab={prepareTab}
+            onActiveTabChange={setPrepareTab}
             onTogglePadSelect={togglePadSelect}
             onRemoveImage={removeImage}
             onTextToImage={handleTextToImage}
@@ -868,8 +870,8 @@ export default function FissionPage() {
             onEditPadImage={(id, url, label, originalUrl) => setEditingImage({ type: 'pad-image', id, url, originalUrl, label })}
             onNext={() => setStep('generate')}
           />
-        )}
-        {step === 'generate' && (
+        </div>
+        <div className={step === 'generate' ? 'h-full' : 'hidden'}>
           <GenerateStep
             images={images}
             selectedPadIds={selectedPadIds}
@@ -892,6 +894,7 @@ export default function FissionPage() {
             videoGenerating={videoGenerating}
             videoLoadingMsg={videoLoadingMsg}
             loading={loading}
+            loadingMsg={loadingMsg}
             onVideoPromptChange={setVideoPrompt}
             onVideoDurationChange={setVideoDuration}
             onVideoResolutionChange={setVideoResolution}
@@ -908,7 +911,7 @@ export default function FissionPage() {
             onGenerate={handleGenerateVideo}
             onBack={() => setStep('prepare')}
           />
-        )}
+        </div>
       </div>
 
       {showCaptureModal && (
@@ -939,7 +942,8 @@ export default function FissionPage() {
 // ==================== 步骤1：准备垫图 ====================
 function PrepareStep({
   images, selectedPadIds, textToImagePrompt, img2imgPrompt, img2imgSources,
-  aspectRatio, resolution, t2iModel, i2iModel, loading,
+  aspectRatio, resolution, t2iModel, i2iModel, loading, loadingMsg,
+  activeTab, onActiveTabChange,
   onTogglePadSelect, onRemoveImage, onTextToImage, onImageUpload, onImageToImage,
   onRemoveSource, onTextToImagePromptChange, onImg2imgPromptChange,
   onAspectRatioChange, onResolutionChange, onT2iModelChange, onI2iModelChange,
@@ -955,6 +959,9 @@ function PrepareStep({
   t2iModel: ImageModel;
   i2iModel: ImageModel;
   loading: boolean;
+  loadingMsg: string;
+  activeTab: 'text2img' | 'img2img';
+  onActiveTabChange: (tab: 'text2img' | 'img2img') => void;
   onTogglePadSelect: (id: string) => void;
   onRemoveImage: (id: string) => void;
   onTextToImage: () => void;
@@ -973,7 +980,6 @@ function PrepareStep({
   onEditPadImage: (id: string, url: string, label: string, originalUrl: string) => void;
   onNext: () => void;
 }) {
-  const [activeTab, setActiveTab] = useState<'text2img' | 'img2img'>('text2img');
   const imageInputRef = useRef<HTMLInputElement>(null!);
 
   // 构建图生图 @ 引用资源列表
@@ -989,10 +995,10 @@ function PrepareStep({
       {/* 左侧操作区 */}
       <div className="w-96 flex-shrink-0 flex flex-col bg-runway-surface border-r border-runway-border min-h-0">
         <div className="flex border-b border-runway-border flex-shrink-0">
-          <button onClick={() => setActiveTab('text2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'text2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
+          <button onClick={() => onActiveTabChange('text2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'text2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
             <Wand2 className="w-4 h-4" />文生图
           </button>
-          <button onClick={() => setActiveTab('img2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'img2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
+          <button onClick={() => onActiveTabChange('img2img')} className={`flex-1 py-3 text-sm font-medium flex items-center justify-center gap-2 transition-colors ${activeTab === 'img2img' ? 'text-white border-b-2 border-white bg-runway-deep' : 'text-runway-slate hover:text-white'}`}>
             <ImageIcon className="w-4 h-4" />图生图
           </button>
         </div>
@@ -1047,6 +1053,11 @@ function PrepareStep({
                         </button>
                       </div>
                     ))}
+                  </div>
+                )}
+                {loading && loadingMsg && (
+                  <div className="flex items-center gap-1.5 mt-2 text-xs text-blue-400">
+                    <Loader2 className="w-3 h-3 animate-spin" />{loadingMsg}
                   </div>
                 )}
               </div>
@@ -1137,7 +1148,7 @@ function PrepareStep({
                     onClick={(e) => {
                       e.stopPropagation();
                       onAddToImg2imgSource(img.url, img.label);
-                      setActiveTab('img2img');
+                      onActiveTabChange('img2img');
                     }}
                     className="absolute bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 bg-black/80 text-white text-xs rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black flex items-center gap-1.5 border border-white/20"
                     title="添加为图生图源图"
@@ -1166,7 +1177,7 @@ function GenerateStep({
   videoPrompt, videoDuration, videoResolution, videoRatio,
   generateAudio, realPersonMode, useRefVideo, useRefAudio,
   refVideoLocalUrl, refVideoUrl, refAudioLocalName, refAudioUrl,
-  generatedVideoUrl, videoGenerating, videoLoadingMsg, loading,
+  generatedVideoUrl, videoGenerating, videoLoadingMsg, loading, loadingMsg,
   onVideoPromptChange, onVideoDurationChange, onVideoResolutionChange,
   onVideoRatioChange, onGenerateAudioChange, onRealPersonModeChange,
   onUseRefVideoChange, onUseRefAudioChange,
@@ -1194,6 +1205,7 @@ function GenerateStep({
   videoGenerating: boolean;
   videoLoadingMsg: string;
   loading: boolean;
+  loadingMsg: string;
   onVideoPromptChange: (v: string) => void;
   onVideoDurationChange: (v: string) => void;
   onVideoResolutionChange: (v: string) => void;
@@ -1319,6 +1331,13 @@ function GenerateStep({
               )}
             </div>
           </div>
+
+          {/* 上传进度提示 */}
+          {loading && loadingMsg && (
+            <div className="flex items-center gap-1.5 text-xs text-blue-400">
+              <Loader2 className="w-3 h-3 animate-spin" />{loadingMsg}
+            </div>
+          )}
 
           {/* 提示词 */}
           <div>
