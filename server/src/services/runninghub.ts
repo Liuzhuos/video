@@ -492,7 +492,7 @@ export async function createSeedance2Task(params: Seedance2Params): Promise<stri
 
   console.log('[RunningHub] Seedance2 请求体:', JSON.stringify(body, null, 2));
 
-  const response = await fetch(`${BASE_URL}/rhart-video/sparkvideo-2.0/multimodal-video`, {
+  const response = await fetch(`${BASE_URL}/openapi/v2/bytedance/seedance-2.0-global/multimodal-video`, {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
@@ -529,20 +529,18 @@ export async function waitForSeedance2Result(
   const startTime = Date.now();
 
   while (Date.now() - startTime < maxWaitMs) {
-    const status = await checkTaskStatus(taskId);
+    const result = await queryV2Task(taskId);
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const videoOutput = outputs.find((o) =>
-        ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType?.toLowerCase() ?? '')
-      );
-      if (videoOutput) return videoOutput.fileUrl;
-      if (outputs.length > 0) return outputs[0].fileUrl;
+    if (result.status === 'SUCCESS') {
+      const videoOutput = result.results?.find(
+        (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.find((r) => r.url);
+      if (videoOutput?.url) return videoOutput.url;
       throw new Error('Seedance2 任务完成但没有视频输出');
     }
 
-    if (status === 'FAILED' || status === 'ERROR') {
-      throw new Error('Seedance2 任务执行失败');
+    if (result.status === 'FAILED') {
+      throw new Error(`Seedance2 任务失败: ${result.errorMessage || '未知错误'}`);
     }
 
     await new Promise((resolve) => setTimeout(resolve, intervalMs));

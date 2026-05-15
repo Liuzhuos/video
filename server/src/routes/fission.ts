@@ -11,24 +11,17 @@ import {
   createImageToImageTask,
   waitForImageToImageResult,
   createSeedance2Task,
+  queryV2Task,
   type ImageModel,
 } from '../services/runninghub';
+import { uploadBufferToOSS } from '../services/oss';
+import { trimVideoBuffer } from '../services/ffmpeg';
 
 export const fissionRouter = Router();
 
-// 视频上传配置
-const videoStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `video_${Date.now()}${ext}`);
-  },
-});
-
+// 视频上传（内存存储）
 const videoUpload = multer({
-  storage: videoStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 200 * 1024 * 1024 }, // 200MB
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['video/mp4', 'video/quicktime', 'video/webm', 'video/x-msvideo'];
@@ -40,19 +33,9 @@ const videoUpload = multer({
   },
 });
 
-// 图片上传配置（用于图生图的源图）
-const imageStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `fission_img_${Date.now()}${ext}`);
-  },
-});
-
+// 图片上传（内存存储）
 const imageUpload = multer({
-  storage: imageStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
@@ -64,19 +47,9 @@ const imageUpload = multer({
   },
 });
 
-// 音频上传配置
-const audioStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `audio_${Date.now()}${ext}`);
-  },
-});
-
+// 音频上传（内存存储）
 const audioUpload = multer({
-  storage: audioStorage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/aac', 'audio/flac', 'audio/x-m4a'];
@@ -88,32 +61,68 @@ const audioUpload = multer({
   },
 });
 
-// POST /api/fission/upload-video - 上传视频
-fissionRouter.post('/upload-video', videoUpload.single('video'), (req: Request, res: Response) => {
+// POST /api/fission/upload-video - 上传视频到 OSS
+fissionRouter.post('/upload-video', videoUpload.single('video'), async (req: Request, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: '请上传视频文件' });
     return;
   }
-
-  res.json({
-    url: `/uploads/${req.file.filename}`,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    size: req.file.size,
-  });
+  try {
+    const ext = path.extname(req.file.originalname) || '.mp4';
+    const filename = `video_${Date.now()}${ext}`;
+    const ossUrl = await uploadBufferToOSS(req.file.buffer, filename);
+    res.json({ url: ossUrl, filename, originalName: req.file.originalname, size: req.file.size });
+  } catch (err: any) {
+    console.error('[视频上传] OSS 失败:', err.message);
+    res.status(500).json({ error: '视频上传失败，请重试' });
+  }
 });
 
-// POST /api/fission/upload-frame - 上传截取的关键帧图片
-fissionRouter.post('/upload-frame', imageUpload.single('image'), (req: Request, res: Response) => {
+// POST /api/fission/trim-video - 上传视频并用 ffmpeg 裁剪，返回 OSS URL
+fissionRouter.post('/trim-video', videoUpload.single('video'), async (req: Request, res: Response) => {
+  if (!req.file) {
+    res.status(400).json({ error: '请上传视频文件' });
+    return;
+  }
+  const startTime = parseFloat(req.body.startTime ?? '0');
+  const endTime = parseFloat(req.body.endTime ?? '0');
+
+  if (isNaN(startTime) || isNaN(endTime) || endTime <= startTime) {
+    res.status(400).json({ error: '无效的裁剪时间范围' });
+    return;
+  }
+
+  try {
+    const ext = (path.extname(req.file.originalname) || '.mp4').replace('.', '');
+    console.log(`[视频裁剪] ${startTime}s → ${endTime}s, 原始大小: ${req.file.size} bytes`);
+
+    const trimmed = await trimVideoBuffer(req.file.buffer, startTime, endTime, ext);
+    const filename = `trimmed_${Date.now()}.mp4`;
+    const ossUrl = await uploadBufferToOSS(trimmed, filename);
+
+    console.log(`[视频裁剪] 完成，裁剪后大小: ${trimmed.length} bytes, OSS: ${ossUrl}`);
+    res.json({ url: ossUrl, filename });
+  } catch (err: any) {
+    console.error('[视频裁剪] 失败:', err.message);
+    res.status(500).json({ error: `视频裁剪失败: ${err.message}` });
+  }
+});
+
+// POST /api/fission/upload-frame - 上传截帧图片到 OSS
+fissionRouter.post('/upload-frame', imageUpload.single('image'), async (req: Request, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: '请上传图片' });
     return;
   }
-
-  res.json({
-    url: `/uploads/${req.file.filename}`,
-    filename: req.file.filename,
-  });
+  try {
+    const ext = path.extname(req.file.originalname) || '.png';
+    const filename = `frame_${Date.now()}${ext}`;
+    const ossUrl = await uploadBufferToOSS(req.file.buffer, filename);
+    res.json({ url: ossUrl, filename });
+  } catch (err: any) {
+    console.error('[截帧上传] OSS 失败:', err.message);
+    res.status(500).json({ error: '图片上传失败，请重试' });
+  }
 });
 
 // POST /api/fission/text-to-image - 文生图
@@ -230,26 +239,24 @@ fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
   }
 });
 
-// GET /api/fission/task/:taskId - 查询任务状态
+// GET /api/fission/task/:taskId - 查询任务状态（使用 /openapi/v2/query）
 fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   try {
     const taskId = req.params.taskId;
-    const status = await checkTaskStatus(taskId);
+    const result = await queryV2Task(taskId);
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const videoOutput = outputs.find((o) =>
-        ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
-      );
+    if (result.status === 'SUCCESS') {
+      const videoOutput = result.results?.find(
+        (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.find((r) => r.url);
 
       res.json({
         taskId,
         status: 'success',
-        url: videoOutput?.fileUrl || outputs[0]?.fileUrl,
-        outputs,
+        url: videoOutput?.url,
       });
-    } else if (status === 'FAILED' || status === 'ERROR') {
-      res.json({ taskId, status: 'failed' });
+    } else if (result.status === 'FAILED') {
+      res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });
     }
@@ -259,18 +266,21 @@ fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   }
 });
 
-// POST /api/fission/upload-audio - 上传音频（用于 Seedance 2.0）
-fissionRouter.post('/upload-audio', audioUpload.single('audio'), (req: Request, res: Response) => {
+// POST /api/fission/upload-audio - 上传音频到 OSS
+fissionRouter.post('/upload-audio', audioUpload.single('audio'), async (req: Request, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: '请上传音频文件' });
     return;
   }
-  res.json({
-    url: `/uploads/${req.file.filename}`,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    size: req.file.size,
-  });
+  try {
+    const ext = path.extname(req.file.originalname) || '.mp3';
+    const filename = `audio_${Date.now()}${ext}`;
+    const ossUrl = await uploadBufferToOSS(req.file.buffer, filename);
+    res.json({ url: ossUrl, filename, originalName: req.file.originalname, size: req.file.size });
+  } catch (err: any) {
+    console.error('[音频上传] OSS 失败:', err.message);
+    res.status(500).json({ error: '音频上传失败，请重试' });
+  }
 });
 
 // POST /api/fission/seedance2 - Seedance 2.0 图生视频
@@ -311,7 +321,7 @@ fissionRouter.post('/seedance2', async (req: Request, res: Response) => {
       ? videoUrls.filter((u: string) => u.startsWith('http')).slice(0, 3)
       : [];
     const validAudioUrls = Array.isArray(audioUrls)
-      ? audioUrls.filter((u: string) => u.startsWith('http') || u.startsWith('/uploads')).slice(0, 3)
+      ? audioUrls.filter((u: string) => u.startsWith('http')).slice(0, 3)
       : [];
 
     if (validImageUrls.length === 0 && validVideoUrls.length === 0) {

@@ -2,22 +2,13 @@ import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
 import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, type ImageModel } from '../services/runninghub';
+import { uploadBufferToOSS } from '../services/oss';
 
 export const imageRouter = Router();
 
-// 文件上传配置
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => {
-    cb(null, 'uploads/');
-  },
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `img_${Date.now()}${ext}`);
-  },
-});
-
+// 内存存储，不写磁盘
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
@@ -29,19 +20,21 @@ const upload = multer({
   },
 });
 
-// POST /api/image/upload - 上传图片
-imageRouter.post('/upload', upload.single('image'), (req: Request, res: Response) => {
+// POST /api/image/upload - 上传图片到 OSS，返回公网 URL
+imageRouter.post('/upload', upload.single('image'), async (req: Request, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: '请上传图片文件' });
     return;
   }
-
-  res.json({
-    url: `/uploads/${req.file.filename}`,
-    filename: req.file.filename,
-    originalName: req.file.originalname,
-    size: req.file.size,
-  });
+  try {
+    const ext = path.extname(req.file.originalname) || '.png';
+    const filename = `img_${Date.now()}${ext}`;
+    const ossUrl = await uploadBufferToOSS(req.file.buffer, filename);
+    res.json({ url: ossUrl, filename, originalName: req.file.originalname, size: req.file.size });
+  } catch (err: any) {
+    console.error('[图片上传] OSS 失败:', err.message);
+    res.status(500).json({ error: '图片上传失败，请重试' });
+  }
 });
 
 // POST /api/image/generate - 文生图（调用 RunningHub 全能图片，支持模型选择）
