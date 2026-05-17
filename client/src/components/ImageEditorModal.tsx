@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, Pen, Type, ImageIcon, RotateCcw, Save, Minus, Plus } from 'lucide-react';
+import { X, Pen, Type, ImageIcon, RotateCcw, RotateCw, Save, Minus, Plus } from 'lucide-react';
 
 type Tool = 'pen' | 'text';
 
@@ -31,6 +31,10 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   const [pendingText, setPendingText] = useState<{ x: number; y: number } | null>(null);
   const [pendingValue, setPendingValue] = useState('');
   const [fontSize, setFontSize] = useState(20);
+  const [rotation, setRotation] = useState(0); // 实际累计旋转角度（用于 transform，不限范围）
+
+  // 显示用的归一化角度 (-180, 180]
+  const displayRotation = ((((rotation % 360) + 540) % 360) - 180);
 
   const isDrawing = useRef(false);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
@@ -135,8 +139,9 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   };
 
   const handleClear = () => {
-    // 恢复到最原始的图片，清空所有涂抹痕迹
+    // 恢复到最原始的图片，清空所有涂抹痕迹，重置旋转
     loadImageToCanvas(resolvedOriginalUrl, true);
+    setRotation(0);
   };
 
   // ── 画笔事件 ──
@@ -217,7 +222,33 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
     const mctx = merged.getContext('2d')!;
     mctx.drawImage(canvas, 0, 0);
     mctx.drawImage(overlay, 0, 0);
-    onSave(merged.toDataURL('image/png'));
+
+    // 如果有旋转，计算旋转后的包围盒并生成新画布
+    if (rotation % 360 !== 0) {
+      const rad = (rotation * Math.PI) / 180;
+      const w = merged.width;
+      const h = merged.height;
+
+      // 计算旋转后的包围盒尺寸
+      const absCos = Math.abs(Math.cos(rad));
+      const absSin = Math.abs(Math.sin(rad));
+      const newW = Math.ceil(w * absCos + h * absSin);
+      const newH = Math.ceil(w * absSin + h * absCos);
+
+      const rotatedCanvas = document.createElement('canvas');
+      rotatedCanvas.width = newW;
+      rotatedCanvas.height = newH;
+      const rctx = rotatedCanvas.getContext('2d')!;
+
+      // 将坐标原点移到新画布中心，旋转后绘制原图
+      rctx.translate(newW / 2, newH / 2);
+      rctx.rotate(rad);
+      rctx.drawImage(merged, -w / 2, -h / 2);
+
+      onSave(rotatedCanvas.toDataURL('image/png'));
+    } else {
+      onSave(merged.toDataURL('image/png'));
+    }
   };
 
   // overlay 的 cursor
@@ -287,6 +318,47 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
             </button>
           </div>
 
+          {/* 旋转控制 */}
+          <div className="flex items-center gap-1.5 ml-1 border-l border-runway-border pl-3">
+            <span className="text-xs text-runway-slate">旋转</span>
+            <button
+              onClick={() => setRotation(r => r - 90)}
+              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+              title="逆时针旋转90°"
+            >
+              <RotateCcw className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setRotation(r => r - 5)}
+              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+              title="逆时针旋转5°"
+            >
+              <Minus className="w-3 h-3" />
+            </button>
+            <span className="text-xs text-white w-10 text-center">{displayRotation}°</span>
+            <button
+              onClick={() => setRotation(r => r + 5)}
+              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+              title="顺时针旋转5°"
+            >
+              <Plus className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setRotation(r => r + 90)}
+              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+              title="顺时针旋转90°"
+            >
+              <RotateCw className="w-3 h-3" />
+            </button>
+            <button
+              onClick={() => setRotation(0)}
+              className="px-2 py-1 border border-runway-border text-runway-slate text-xs rounded hover:text-white transition-colors"
+              title="重置旋转"
+            >
+              重置
+            </button>
+          </div>
+
           <div className="flex-1" />
 
           {/* 撤销 / 清除 */}
@@ -311,18 +383,20 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
           className="relative flex-1 overflow-auto flex items-center justify-center p-4 bg-runway-black min-h-0"
           style={{ minWidth: 400 }}
         >
-          {/* 底层：原图 */}
-          <canvas ref={canvasRef} className="absolute pointer-events-none" style={{ maxWidth: '100%', maxHeight: '100%' }} />
-          {/* 上层：绘制层 */}
-          <canvas
-            ref={overlayRef}
-            style={{ cursor: cursorStyle, maxWidth: '100%', maxHeight: '100%', position: 'relative' }}
-            onMouseDown={handleMouseDown}
-            onMouseMove={handleMouseMove}
-            onMouseUp={handleMouseUp}
-            onMouseLeave={handleMouseUp}
-            onClick={handleCanvasClick}
-          />
+          <div style={{ transform: `rotate(${rotation}deg)`, transition: 'transform 0.2s ease', position: 'relative' }}>
+            {/* 底层：原图 */}
+            <canvas ref={canvasRef} className="absolute pointer-events-none" style={{ maxWidth: '100%', maxHeight: '100%' }} />
+            {/* 上层：绘制层 */}
+            <canvas
+              ref={overlayRef}
+              style={{ cursor: cursorStyle, maxWidth: '100%', maxHeight: '100%', position: 'relative' }}
+              onMouseDown={handleMouseDown}
+              onMouseMove={handleMouseMove}
+              onMouseUp={handleMouseUp}
+              onMouseLeave={handleMouseUp}
+              onClick={handleCanvasClick}
+            />
+          </div>
 
           {/* 文字输入框（浮动在 overlay 上） */}
           {pendingText && overlayRect && (

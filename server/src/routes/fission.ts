@@ -242,7 +242,7 @@ fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
 // GET /api/fission/task/:taskId - 查询任务状态（使用 /openapi/v2/query）
 fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   try {
-    const taskId = req.params.taskId;
+    const taskId = req.params.taskId as string;
     const result = await queryV2Task(taskId);
 
     if (result.status === 'SUCCESS') {

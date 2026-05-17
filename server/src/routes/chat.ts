@@ -1,5 +1,6 @@
 import { Router, Request, Response } from 'express';
 import { deepseekChat } from '../services/deepseek';
+import { polishPromptWithVision } from '../services/dashscope';
 
 export const chatRouter = Router();
 
@@ -80,6 +81,90 @@ chatRouter.post('/', async (req: Request, res: Response) => {
     console.error('Chat error:', error);
     res.status(500).json({
       error: '对话服务出错',
+      detail: error.message,
+    });
+  }
+});
+
+// POST /api/chat/polish-prompt - 使用百炼视觉模型或 DeepSeek 润色提示词
+chatRouter.post('/polish-prompt', async (req: Request, res: Response) => {
+  try {
+    const { imageUrls, videoUrls, currentPrompt, mode } = req.body;
+
+    const hasMedia = (imageUrls && imageUrls.length > 0) || (videoUrls && videoUrls.length > 0);
+
+    if (!hasMedia && !currentPrompt?.trim()) {
+      res.status(400).json({ error: '请提供提示词或至少一张图片/视频' });
+      return;
+    }
+
+    let polished: string;
+
+    if (hasMedia) {
+      // 有图片/视频时，使用百炼视觉模型
+      polished = await polishPromptWithVision(
+        imageUrls || [],
+        videoUrls || [],
+        currentPrompt || '',
+        mode || 'video'
+      );
+    } else {
+      // 纯文本润色，使用 DeepSeek
+      const systemPrompt = mode === 'image'
+        ? `你是一个专业的AI图片生成提示词优化专家。用户会给你一段图片生成提示词，请帮助润色和优化。
+要求：
+1. 保留原始意图
+2. 从多个维度补充和细化描述
+3. 使提示词更加专业和具体
+4. 严格按以下 JSON 格式输出，不要加任何解释或前缀：
+
+{
+  "prompt": "完整的润色后提示词（将所有维度整合为一段连贯描述）",
+  "subject": "主体描述（人物/物体/场景的核心内容）",
+  "action": "动作/姿态（主体正在做什么）",
+  "environment": "环境/背景（场景所处的空间和氛围）",
+  "style": "艺术风格（如写实、油画、水彩、赛博朋克、吉卜力等）",
+  "lighting": "光影效果（光源方向、色温、明暗对比）",
+  "color": "色彩基调（主色调、配色方案、饱和度）",
+  "composition": "构图方式（视角、景别、画面布局）",
+  "texture": "材质/质感（皮肤、布料、金属等表面细节）",
+  "mood": "情绪/氛围（画面传达的情感和气氛）",
+  "details": "额外细节（装饰、配件、特效等补充元素）"
+}`
+        : `你是一个专业的AI视频生成提示词优化专家。用户会给你一段视频生成提示词，请帮助润色和优化。
+要求：
+1. 保留原始意图
+2. 从多个维度补充和细化描述
+3. 使提示词更加专业和具体
+4. 严格按以下 JSON 格式输出，不要加任何解释或前缀：
+
+{
+  "prompt": "完整的润色后提示词（将所有维度整合为一段连贯描述）",
+  "subject": "主体描述（人物/物体/场景的核心内容）",
+  "action": "动作/运动（主体的动作和运动轨迹）",
+  "environment": "环境/背景（场景所处的空间和氛围）",
+  "style": "视觉风格（如电影感、纪录片、动画、广告等）",
+  "camera": "镜头运动（推拉摇移、跟随、环绕、升降等）",
+  "shot": "景别（远景、全景、中景、近景、特写）",
+  "lighting": "光影效果（光源方向、色温、明暗变化）",
+  "color": "色彩基调（主色调、调色风格、饱和度）",
+  "speed": "节奏/速度（快慢、加速、慢动作等）",
+  "transition": "转场/变化（画面如何演变和过渡）",
+  "mood": "情绪/氛围（画面传达的情感和气氛）",
+  "audio": "音效/配乐建议（环境音、背景音乐风格）"
+}`;
+
+      polished = await deepseekChat([
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: currentPrompt },
+      ]);
+    }
+
+    res.json({ prompt: polished });
+  } catch (error: any) {
+    console.error('[提示词润色] 错误:', error);
+    res.status(500).json({
+      error: '提示词润色失败',
       detail: error.message,
     });
   }

@@ -5,8 +5,9 @@
  * 序列化时把 chip 转为 refTag 文本输出给父组件。
  */
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { Image as ImageIcon, Film, Music } from 'lucide-react';
+import { Image as ImageIcon, Film, Music, Sparkles, Loader2 } from 'lucide-react';
 import ReactDOM from 'react-dom/client';
+import { polishPrompt } from '../api/chat';
 
 export type AssetType = 'image' | 'video' | 'audio';
 
@@ -41,6 +42,14 @@ interface PromptEditorProps {
   assets: Asset[];
   placeholder?: string;
   minHeight?: string;
+  /** 用于 AI 润色的图片 URL 列表 */
+  polishImageUrls?: string[];
+  /** 用于 AI 润色的视频 URL 列表 */
+  polishVideoUrls?: string[];
+  /** 润色模式：image=图片生成润色，video=视频生成润色 */
+  polishMode?: 'image' | 'video';
+  /** 是否始终显示润色按钮（即使没有图片/视频，也可以纯文本润色） */
+  showPolishButton?: boolean;
 }
 
 // ── 序列化：把 contenteditable 内容转为纯文本 ──────────────
@@ -141,6 +150,10 @@ export default function PromptEditor({
   assets,
   placeholder = '描述你想要生成的视频效果...',
   minHeight = '7.5rem',
+  polishImageUrls = [],
+  polishVideoUrls = [],
+  polishMode = 'video',
+  showPolishButton = false,
 }: PromptEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -151,6 +164,7 @@ export default function PromptEditor({
   const savedRange = useRef<Range | null>(null);
   const isComposing = useRef(false);
   const suppressChange = useRef(false);
+  const [polishing, setPolishing] = useState(false);
 
   // 外部清空时清除编辑器
   useEffect(() => {
@@ -160,6 +174,16 @@ export default function PromptEditor({
       suppressChange.current = false;
     }
   }, [value]);
+
+  // 组件挂载时，如果有初始 value 则同步到编辑器
+  useEffect(() => {
+    if (value && editorRef.current && !editorRef.current.textContent) {
+      suppressChange.current = true;
+      editorRef.current.textContent = value;
+      suppressChange.current = false;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const emitChange = useCallback(() => {
     if (suppressChange.current) return;
@@ -330,8 +354,50 @@ export default function PromptEditor({
     return () => document.removeEventListener('mousedown', handler);
   }, []);
 
+  // AI 润色处理
+  const handlePolish = async () => {
+    const hasMedia = polishImageUrls.length > 0 || polishVideoUrls.length > 0;
+    if (!hasMedia && !value.trim()) return;
+
+    try {
+      setPolishing(true);
+      const result = await polishPrompt(polishImageUrls, polishVideoUrls, value, polishMode);
+      // 将润色结果写入编辑器
+      onChange(result);
+      if (editorRef.current) {
+        suppressChange.current = true;
+        editorRef.current.textContent = result;
+        suppressChange.current = false;
+      }
+    } catch (err: any) {
+      console.error('润色失败:', err);
+    } finally {
+      setPolishing(false);
+    }
+  };
+
+  const canPolish = polishImageUrls.length > 0 || polishVideoUrls.length > 0 || (showPolishButton && value.trim().length > 0);
+
   return (
     <div className="relative">
+      {/* AI 润色按钮 */}
+      {canPolish && (
+        <button
+          type="button"
+          onClick={handlePolish}
+          disabled={polishing}
+          title="AI 润色提示词"
+          className="absolute top-2 right-2 z-10 flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all duration-200 bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-purple-300 hover:from-purple-500/30 hover:to-blue-500/30 hover:border-purple-400/50 hover:text-purple-200 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          {polishing ? (
+            <Loader2 className="w-3 h-3 animate-spin" />
+          ) : (
+            <Sparkles className="w-3 h-3" />
+          )}
+          <span>{polishing ? '润色中...' : 'AI润色'}</span>
+        </button>
+      )}
+
       {/* contenteditable 编辑区 */}
       <div
         ref={editorRef}

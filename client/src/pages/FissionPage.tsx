@@ -1007,7 +1007,15 @@ function PrepareStep({
           {activeTab === 'text2img' && (
             <div className="flex flex-col gap-3">
               <p className="text-xs text-runway-slate">输入描述，AI 直接生成图片作为垫图。</p>
-              <textarea value={textToImagePrompt} onChange={(e) => onTextToImagePromptChange(e.target.value)} placeholder="描述你想要的图片，例如：一只在草地上奔跑的金毛犬，阳光明媚..." rows={6} className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-3 text-sm text-white placeholder-runway-slate focus:outline-none focus:border-runway-charcoal resize-none" />
+              <PromptEditor
+                value={textToImagePrompt}
+                onChange={onTextToImagePromptChange}
+                assets={[]}
+                placeholder="描述你想要的图片，例如：一只在草地上奔跑的金毛犬，阳光明媚..."
+                minHeight="9rem"
+                polishMode="image"
+                showPolishButton={true}
+              />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
               <ModelSelector label="模型" value={t2iModel} onChange={onT2iModelChange} />
@@ -1067,6 +1075,9 @@ function PrepareStep({
                 assets={img2imgAssets}
                 placeholder="描述想要的变化，例如：将背景改为夜晚城市...（输入 @ 引用源图）"
                 minHeight="7.5rem"
+                polishImageUrls={img2imgSources.map((s) => s.url).filter((u) => u.startsWith('http'))}
+                polishMode="image"
+                showPolishButton={true}
               />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
@@ -1348,6 +1359,10 @@ function GenerateStep({
               assets={promptAssets}
               placeholder="描述你想要生成的视频效果，例如：镜头缓慢推进，人物微笑转身..."
               minHeight="7.5rem"
+              polishImageUrls={selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'))}
+              polishVideoUrls={useRefVideo && refVideoUrl ? [refVideoUrl] : []}
+              polishMode="video"
+              showPolishButton={true}
             />
           </div>
 
