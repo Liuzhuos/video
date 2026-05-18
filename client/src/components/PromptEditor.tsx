@@ -175,6 +175,22 @@ export default function PromptEditor({
     }
   }, [value]);
 
+  // 外部 value 变化时同步到编辑器（非用户输入触发的变化）
+  const lastEmittedValue = useRef(value);
+  useEffect(() => {
+    if (value !== lastEmittedValue.current && editorRef.current) {
+      // value 是从外部设置的（不是由编辑器 emitChange 触发的）
+      suppressChange.current = true;
+      if (value) {
+        editorRef.current.textContent = value;
+      } else {
+        editorRef.current.innerHTML = '';
+      }
+      suppressChange.current = false;
+      lastEmittedValue.current = value;
+    }
+  }, [value]);
+
   // 组件挂载时，如果有初始 value 则同步到编辑器
   useEffect(() => {
     if (value && editorRef.current && !editorRef.current.textContent) {
@@ -187,7 +203,11 @@ export default function PromptEditor({
 
   const emitChange = useCallback(() => {
     if (suppressChange.current) return;
-    if (editorRef.current) onChange(serialize(editorRef.current));
+    if (editorRef.current) {
+      const newValue = serialize(editorRef.current);
+      lastEmittedValue.current = newValue;
+      onChange(newValue);
+    }
   }, [onChange]);
 
   // 保存当前光标位置

@@ -13,11 +13,14 @@ import {
   Music,
   Video,
   Scissors,
+  FileText,
 } from 'lucide-react';
 import { uploadImage } from '../api/image';
 import { uploadVideo } from '../api/fission';
 import ImageEditorModal from '../components/ImageEditorModal';
 import PromptEditor, { type Asset } from '../components/PromptEditor';
+import ScriptModal, { type ScriptScene } from '../components/ScriptModal';
+import { polishPrompt } from '../api/chat';
 
 type FissionStep = 'prepare' | 'generate';
 type ImageSource = 'frame' | 'text2img' | 'img2img';
@@ -510,6 +513,9 @@ export default function FissionPage() {
   const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [showVideoTrimModal, setShowVideoTrimModal] = useState(false);
 
+  // 分镜脚本
+  const [scriptScenes, setScriptScenes] = useState<ScriptScene[]>([]);
+
   // 图片编辑器
   const [editingImage, setEditingImage] = useState<{
     type: 'img2img-source';
@@ -767,8 +773,27 @@ export default function FissionPage() {
       setVideoLoadingMsg('提交视频生成任务...');
       setError(null);
       setGeneratedVideoUrl(null);
+
+      // 合并提示词：整体描述 + 分镜脚本
+      let fullPrompt = videoPrompt.trim();
+      if (scriptScenes.length > 0) {
+        const sceneParts = scriptScenes
+          .filter((s) => s.description.trim())
+          .map((s, i) => {
+            const parts: string[] = [];
+            if (s.timeStart || s.timeEnd) parts.push(`[${s.timeStart || '0s'}-${s.timeEnd || '?'}]`);
+            parts.push(s.description.trim());
+            if (s.camera) parts.push(`镜头：${s.camera}`);
+            if (s.action) parts.push(`动作：${s.action}`);
+            return `镜头${i + 1}：${parts.join('，')}`;
+          });
+        if (sceneParts.length > 0) {
+          fullPrompt += '\n\n' + sceneParts.join('；');
+        }
+      }
+
       const body: Record<string, any> = {
-        prompt: videoPrompt.trim(),
+        prompt: fullPrompt,
         duration: videoDuration,
         resolution: videoResolution,
         ratio: videoRatio,
@@ -895,6 +920,8 @@ export default function FissionPage() {
             videoLoadingMsg={videoLoadingMsg}
             loading={loading}
             loadingMsg={loadingMsg}
+            scriptScenes={scriptScenes}
+            onScriptScenesChange={setScriptScenes}
             onVideoPromptChange={setVideoPrompt}
             onVideoDurationChange={setVideoDuration}
             onVideoResolutionChange={setVideoResolution}
@@ -1189,6 +1216,7 @@ function GenerateStep({
   generateAudio, realPersonMode, useRefVideo, useRefAudio,
   refVideoLocalUrl, refVideoUrl, refAudioLocalName, refAudioUrl,
   generatedVideoUrl, videoGenerating, videoLoadingMsg, loading, loadingMsg,
+  scriptScenes, onScriptScenesChange,
   onVideoPromptChange, onVideoDurationChange, onVideoResolutionChange,
   onVideoRatioChange, onGenerateAudioChange, onRealPersonModeChange,
   onUseRefVideoChange, onUseRefAudioChange,
@@ -1217,6 +1245,8 @@ function GenerateStep({
   videoLoadingMsg: string;
   loading: boolean;
   loadingMsg: string;
+  scriptScenes: ScriptScene[];
+  onScriptScenesChange: (scenes: ScriptScene[]) => void;
   onVideoPromptChange: (v: string) => void;
   onVideoDurationChange: (v: string) => void;
   onVideoResolutionChange: (v: string) => void;
@@ -1236,6 +1266,8 @@ function GenerateStep({
   const refVideoInputRef = useRef<HTMLInputElement>(null!);
   const refAudioInputRef = useRef<HTMLInputElement>(null!);
   const localImageInputRef = useRef<HTMLInputElement>(null!);
+  const [showScriptModal, setShowScriptModal] = useState(false);
+  const [polishing, setPolishing] = useState(false);
 
   const selectedImages = images.filter((img) => selectedPadIds.includes(img.id) && !img.pending);
 
@@ -1260,6 +1292,53 @@ function GenerateStep({
       thumbnailUrl: null,
     }] : []),
   ];
+
+  // AI 润色（视频模式）：结果分发到提示词 + 脚本
+  const handleVideoPolish = async () => {
+    const imageUrls = selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'));
+    const videoUrls = useRefVideo && refVideoUrl ? [refVideoUrl] : [];
+    if (imageUrls.length === 0 && videoUrls.length === 0 && !videoPrompt.trim()) return;
+
+    try {
+      setPolishing(true);
+      const result = await polishPrompt(imageUrls, videoUrls, videoPrompt, 'video');
+
+      // 尝试解析 JSON
+      let parsed: any = null;
+      try {
+        // 去除可能的 markdown 代码块包裹
+        const cleaned = result.replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+        parsed = JSON.parse(cleaned);
+      } catch {
+        // 如果不是有效 JSON，直接作为文本填入提示词
+        onVideoPromptChange(result);
+        return;
+      }
+
+      // 填充整体提示词
+      if (parsed.prompt) {
+        onVideoPromptChange(parsed.prompt);
+      }
+
+      // 填充分镜脚本
+      if (parsed.scenes && Array.isArray(parsed.scenes)) {
+        const newScenes: ScriptScene[] = parsed.scenes.map((s: any, idx: number) => ({
+          id: `scene_${Date.now()}_${idx}`,
+          timeStart: s.timeStart || s.time_start || '',
+          timeEnd: s.timeEnd || s.time_end || '',
+          description: s.description || s.content || '',
+          camera: s.camera || s.cameraMovement || '',
+          action: s.action || '',
+          audio: s.audio || '',
+        }));
+        onScriptScenesChange(newScenes);
+      }
+    } catch (err: any) {
+      console.error('视频润色失败:', err);
+    } finally {
+      setPolishing(false);
+    }
+  };
 
   return (
     <div className="h-full flex gap-0 overflow-hidden">
@@ -1352,17 +1431,34 @@ function GenerateStep({
 
           {/* 提示词 */}
           <div>
-            <p className="text-xs text-runway-slate mb-2">视频提示词 <span className="text-runway-mid-slate">（输入 @ 引用资源）</span></p>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-runway-slate">视频提示词 <span className="text-runway-mid-slate">（输入 @ 引用资源）</span></p>
+              <div className="flex items-center gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => setShowScriptModal(true)}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all border border-runway-border text-runway-slate hover:text-white hover:border-runway-charcoal"
+                >
+                  <FileText className="w-3 h-3" />
+                  <span>脚本{scriptScenes.length > 0 ? `(${scriptScenes.length})` : ''}</span>
+                </button>
+                <button
+                  type="button"
+                  onClick={handleVideoPolish}
+                  disabled={polishing || (selectedImages.length === 0 && !refVideoUrl && !videoPrompt.trim())}
+                  className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all duration-200 bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-purple-300 hover:from-purple-500/30 hover:to-blue-500/30 hover:border-purple-400/50 hover:text-purple-200 disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {polishing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}
+                  <span>{polishing ? '润色中...' : 'AI润色'}</span>
+                </button>
+              </div>
+            </div>
             <PromptEditor
               value={videoPrompt}
               onChange={onVideoPromptChange}
               assets={promptAssets}
               placeholder="描述你想要生成的视频效果，例如：镜头缓慢推进，人物微笑转身..."
               minHeight="7.5rem"
-              polishImageUrls={selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'))}
-              polishVideoUrls={useRefVideo && refVideoUrl ? [refVideoUrl] : []}
-              polishMode="video"
-              showPolishButton={true}
             />
           </div>
 
@@ -1540,6 +1636,15 @@ function GenerateStep({
           )}
         </div>
       </div>
+
+      {/* 分镜脚本弹窗 */}
+      {showScriptModal && (
+        <ScriptModal
+          scenes={scriptScenes}
+          onScenesChange={onScriptScenesChange}
+          onClose={() => setShowScriptModal(false)}
+        />
+      )}
     </div>
   );
 }
