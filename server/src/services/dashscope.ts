@@ -94,7 +94,7 @@ ${jsonFormat}`;
   contentParts.push({ type: 'text', text: promptText });
 
   const response = await client.chat.completions.create({
-    model: 'qwen-vl-plus',
+    model: 'qwen3-vl-plus',
     messages: [
       {
         role: 'user',
