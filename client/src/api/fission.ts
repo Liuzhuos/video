@@ -1,3 +1,5 @@
+import { authFetch } from './request';
+
 /**
  * 视频裂变应用 API
  */
@@ -23,7 +25,7 @@ export async function uploadVideo(file: File): Promise<{ url: string; filename: 
   const formData = new FormData();
   formData.append('video', file);
 
-  const response = await fetch('/api/fission/upload-video', {
+  const response = await authFetch('/api/fission/upload-video', {
     method: 'POST',
     body: formData,
   });
@@ -43,9 +45,8 @@ export async function imageToImage(
   imageUrl: string,
   prompt: string
 ): Promise<{ url: string; taskId: string }> {
-  const response = await fetch('/api/fission/image-to-image', {
+  const response = await authFetch('/api/fission/image-to-image', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ imageUrl, prompt }),
   });
 
@@ -63,9 +64,8 @@ export async function imageToImage(
 export async function generateFissionVideo(
   params: FissionVideoGenerateParams
 ): Promise<FissionTaskResult> {
-  const response = await fetch('/api/fission/generate-video', {
+  const response = await authFetch('/api/fission/generate-video', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
 
@@ -81,7 +81,7 @@ export async function generateFissionVideo(
  * 查询裂变视频任务状态
  */
 export async function checkFissionTask(taskId: string): Promise<FissionTaskResult> {
-  const response = await fetch(`/api/fission/task/${taskId}`);
+  const response = await authFetch(`/api/fission/task/${taskId}`);
 
   if (!response.ok) {
     const error = await response.json();

@@ -16,8 +16,13 @@ import {
 } from '../services/runninghub';
 import { uploadBufferToOSS } from '../services/oss';
 import { trimVideoBuffer } from '../services/ffmpeg';
+import prisma from '../services/prisma';
+import { optionalAuth, AuthRequest } from '../middleware/auth';
 
 export const fissionRouter = Router();
+
+// 所有裂变路由使用可选认证
+fissionRouter.use(optionalAuth);
 
 // 视频上传（内存存储）
 const videoUpload = multer({
@@ -126,7 +131,7 @@ fissionRouter.post('/upload-frame', imageUpload.single('image'), async (req: Req
 });
 
 // POST /api/fission/text-to-image - 文生图
-fissionRouter.post('/text-to-image', async (req: Request, res: Response) => {
+fissionRouter.post('/text-to-image', async (req: AuthRequest, res: Response) => {
   try {
     const { prompt, aspectRatio, resolution, model } = req.body;
 
@@ -138,13 +143,26 @@ fissionRouter.post('/text-to-image', async (req: Request, res: Response) => {
     const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
     console.log(`[裂变-文生图] model: ${imageModel}, prompt: ${prompt}, aspectRatio: ${aspectRatio}, resolution: ${resolution}`);
 
-    const taskId = await createTextToImageTask(
+    const { taskId, keyId } = await createTextToImageTask(
       prompt,
       aspectRatio || '16:9',
       resolution || '1k',
       imageModel
     );
-    const imageUrl = await waitForTextToImageResult(taskId);
+    const imageUrl = await waitForTextToImageResult(taskId, undefined, undefined, keyId);
+
+    // 保存到数据库
+    if (req.userId) {
+      await prisma.media.create({
+        data: {
+          type: 'IMAGE',
+          filename: `fission_img_${taskId}.png`,
+          url: imageUrl,
+          prompt,
+          userId: req.userId,
+        },
+      });
+    }
 
     res.json({
       url: imageUrl,
@@ -158,7 +176,7 @@ fissionRouter.post('/text-to-image', async (req: Request, res: Response) => {
 });
 
 // POST /api/fission/image-to-image - 图生图（廉价版，支持模型选择）
-fissionRouter.post('/image-to-image', async (req: Request, res: Response) => {
+fissionRouter.post('/image-to-image', async (req: AuthRequest, res: Response) => {
   try {
     const { imageUrl, prompt, aspectRatio, resolution, model } = req.body;
 
@@ -176,14 +194,27 @@ fissionRouter.post('/image-to-image', async (req: Request, res: Response) => {
     const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
     console.log(`[裂变-图生图] model: ${imageModel}, imageUrl: ${imageUrl}, prompt: ${prompt}`);
 
-    const taskId = await createImageToImageTask(
+    const { taskId, keyId } = await createImageToImageTask(
       [imageUrl],
       prompt,
       aspectRatio || '16:9',
       resolution || '1k',
       imageModel
     );
-    const resultUrl = await waitForImageToImageResult(taskId);
+    const resultUrl = await waitForImageToImageResult(taskId, undefined, undefined, keyId);
+
+    // 保存到数据库
+    if (req.userId) {
+      await prisma.media.create({
+        data: {
+          type: 'IMAGE',
+          filename: `fission_i2i_${taskId}.png`,
+          url: resultUrl,
+          prompt,
+          userId: req.userId,
+        },
+      });
+    }
 
     res.json({
       url: resultUrl,
@@ -222,7 +253,7 @@ fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
 
     console.log(`[裂变-视频生成] imageUrl: ${validImageUrl}, prompt: ${prompt}, refVideo: ${referenceVideoUrl || '无'}`);
 
-    const taskId = await createReferenceToVideoTask(
+    const { taskId } = await createReferenceToVideoTask(
       imageUrls,
       prompt,
       duration || '6',
@@ -331,7 +362,7 @@ fissionRouter.post('/seedance2', async (req: Request, res: Response) => {
 
     console.log(`[Seedance2] 垫图: ${validImageUrls.length}张, 参考视频: ${validVideoUrls.length}个, 音频: ${validAudioUrls.length}个`);
 
-    const taskId = await createSeedance2Task({
+    const { taskId } = await createSeedance2Task({
       prompt,
       resolution,
       duration,

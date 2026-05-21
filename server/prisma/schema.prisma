@@ -1,0 +1,102 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// 用户角色枚举
+enum Role {
+  ADMIN
+  EDITOR
+  VIEWER
+}
+
+// 媒体类型枚举
+enum MediaType {
+  IMAGE
+  VIDEO
+}
+
+// 用户表
+model User {
+  id        Int      @id @default(autoincrement())
+  username  String   @unique @db.VarChar(50)
+  password  String   @db.VarChar(255)
+  nickname  String?  @db.VarChar(100)
+  avatar    String?  @db.VarChar(500)
+  role      Role     @default(VIEWER)
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  // 关联
+  media    Media[]
+  projects Project[]
+
+  @@map("users")
+}
+
+// 项目表
+model Project {
+  id          Int      @id @default(autoincrement())
+  name        String   @db.VarChar(200)
+  description String?  @db.Text
+  userId      Int      @map("user_id")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  // 关联
+  user  User    @relation(fields: [userId], references: [id])
+  media Media[]
+
+  @@map("projects")
+}
+
+// API Key 池（RunningHub 等服务的多账号管理）
+model ApiKey {
+  id            Int       @id @default(autoincrement())
+  provider      String    @default("runninghub") @db.VarChar(50) // 服务商标识
+  name          String    @db.VarChar(100)                       // 备注名，如"账号1"
+  apiKey        String    @map("api_key") @db.VarChar(255)       // API Key
+  maxConcurrent Int       @default(5) @map("max_concurrent")     // 并发上限
+  currentLoad   Int       @default(0) @map("current_load")       // 当前活跃任务数
+  totalUsed     Int       @default(0) @map("total_used")         // 累计使用次数
+  enabled       Boolean   @default(true)                         // 是否启用
+  priority      Int       @default(0)                            // 优先级，越大越优先
+  lastUsedAt    DateTime? @map("last_used_at")
+  lastErrorAt   DateTime? @map("last_error_at")
+  lastError     String?   @map("last_error") @db.VarChar(500)
+  createdAt     DateTime  @default(now()) @map("created_at")
+  updatedAt     DateTime  @updatedAt @map("updated_at")
+
+  @@index([provider, enabled])
+  @@map("api_keys")
+}
+
+// 媒体资源表（图片/视频）
+model Media {
+  id        Int       @id @default(autoincrement())
+  type      MediaType
+  filename  String    @db.VarChar(255)
+  url       String    @db.VarChar(1000)
+  ossKey    String?   @map("oss_key") @db.VarChar(500)
+  size      Int?      // 文件大小（字节）
+  width     Int?      // 宽度
+  height    Int?      // 高度
+  duration  Float?    // 视频时长（秒）
+  prompt    String?   @db.Text // 生成时使用的提示词
+  userId    Int       @map("user_id")
+  projectId Int?      @map("project_id")
+  createdAt DateTime  @default(now()) @map("created_at")
+
+  // 关联
+  user    User     @relation(fields: [userId], references: [id])
+  project Project? @relation(fields: [projectId], references: [id])
+
+  @@index([userId])
+  @@index([projectId])
+  @@index([type])
+  @@map("media")
+}

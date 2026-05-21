@@ -3,8 +3,13 @@ import multer from 'multer';
 import path from 'path';
 import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, type ImageModel } from '../services/runninghub';
 import { uploadBufferToOSS } from '../services/oss';
+import prisma from '../services/prisma';
+import { optionalAuth, AuthRequest } from '../middleware/auth';
 
 export const imageRouter = Router();
+
+// 所有图片路由使用可选认证（有登录就记录用户，没登录也能用）
+imageRouter.use(optionalAuth);
 
 // 内存存储，不写磁盘
 const upload = multer({
@@ -21,7 +26,7 @@ const upload = multer({
 });
 
 // POST /api/image/upload - 上传图片到 OSS，返回公网 URL
-imageRouter.post('/upload', upload.single('image'), async (req: Request, res: Response) => {
+imageRouter.post('/upload', upload.single('image'), async (req: AuthRequest, res: Response) => {
   if (!req.file) {
     res.status(400).json({ error: '请上传图片文件' });
     return;
@@ -30,6 +35,7 @@ imageRouter.post('/upload', upload.single('image'), async (req: Request, res: Re
     const ext = path.extname(req.file.originalname) || '.png';
     const filename = `img_${Date.now()}${ext}`;
     const ossUrl = await uploadBufferToOSS(req.file.buffer, filename);
+
     res.json({ url: ossUrl, filename, originalName: req.file.originalname, size: req.file.size });
   } catch (err: any) {
     console.error('[图片上传] OSS 失败:', err.message);
@@ -62,7 +68,7 @@ imageRouter.get('/proxy', async (req: Request, res: Response) => {
 });
 
 // POST /api/image/generate - 文生图（调用 RunningHub 全能图片，支持模型选择）
-imageRouter.post('/generate', async (req: Request, res: Response) => {
+imageRouter.post('/generate', async (req: AuthRequest, res: Response) => {
   try {
     const { prompt, sceneId, aspectRatio, resolution, model } = req.body;
 
@@ -74,7 +80,7 @@ imageRouter.post('/generate', async (req: Request, res: Response) => {
     const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
     console.log(`[文生图] 场景 ${sceneId}, model: ${imageModel}, prompt: ${prompt}`);
 
-    const taskId = await createTextToImageTask(
+    const { taskId, keyId } = await createTextToImageTask(
       prompt,
       aspectRatio || '16:9',
       resolution || '1k',
@@ -82,8 +88,21 @@ imageRouter.post('/generate', async (req: Request, res: Response) => {
     );
     console.log(`[文生图] 任务已创建: ${taskId}`);
 
-    const imageUrl = await waitForTextToImageResult(taskId);
+    const imageUrl = await waitForTextToImageResult(taskId, undefined, undefined, keyId);
     console.log(`[文生图] 生成完成: ${imageUrl}`);
+
+    // 保存到数据库
+    if (req.userId) {
+      await prisma.media.create({
+        data: {
+          type: 'IMAGE',
+          filename: `gen_${taskId}.png`,
+          url: imageUrl,
+          prompt,
+          userId: req.userId,
+        },
+      });
+    }
 
     res.json({
       url: imageUrl,
@@ -110,7 +129,7 @@ imageRouter.post('/generate-async', async (req: Request, res: Response) => {
       return;
     }
 
-    const taskId = await createTextToImageTask(prompt);
+    const { taskId } = await createTextToImageTask(prompt);
 
     res.json({
       taskId,

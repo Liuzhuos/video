@@ -11,6 +11,7 @@
     "build:server": "cd server && npm run build"
   },
   "dependencies": {
+    "@prisma/client": "^7.8.0",
     "ali-oss": "^6.21.0"
   },
   "devDependencies": {

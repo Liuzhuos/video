@@ -21,6 +21,7 @@ import ImageEditorModal from '../components/ImageEditorModal';
 import PromptEditor, { type Asset } from '../components/PromptEditor';
 import ScriptModal, { type ScriptScene } from '../components/ScriptModal';
 import { polishPrompt } from '../api/chat';
+import { authFetch } from '../api/request';
 
 type FissionStep = 'prepare' | 'generate';
 type ImageSource = 'frame' | 'text2img' | 'img2img';
@@ -175,7 +176,7 @@ function VideoTrimModal({
       formData.append('startTime', String(startTime));
       formData.append('endTime', String(endTime));
 
-      const response = await fetch('/api/fission/trim-video', {
+      const response = await authFetch('/api/fission/trim-video', {
         method: 'POST',
         body: formData,
       });
@@ -608,9 +609,8 @@ export default function FissionPage() {
     setImages((prev) => [...prev, { id: slotId, url: '', source: 'text2img', label: currentPrompt.slice(0, 20) + '...', pending: true }]);
     setError(null);
     try {
-      const response = await fetch('/api/image/generate', {
+      const response = await authFetch('/api/image/generate', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ prompt: currentPrompt, aspectRatio, resolution, model: t2iModel }),
       });
       if (!response.ok) { const err = await response.json(); throw new Error(err.error || '文生图失败'); }
@@ -632,9 +632,8 @@ export default function FissionPage() {
     setImages((prev) => [...prev, { id: slotId, url: '', source: 'img2img', label: `图生图: ${currentPrompt.slice(0, 15)}...`, pending: true }]);
     setError(null);
     try {
-      const response = await fetch('/api/fission/image-to-image', {
+      const response = await authFetch('/api/fission/image-to-image', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ imageUrl: sourceUrl, prompt: currentPrompt, aspectRatio, resolution, model: i2iModel }),
       });
       if (!response.ok) { const err = await response.json(); throw new Error(err.error || '图生图失败'); }
@@ -708,7 +707,7 @@ export default function FissionPage() {
       setError(null);
       const formData = new FormData();
       formData.append('audio', file);
-      const response = await fetch('/api/fission/upload-audio', { method: 'POST', body: formData });
+      const response = await authFetch('/api/fission/upload-audio', { method: 'POST', body: formData });
       if (!response.ok) { const err = await response.json(); throw new Error(err.error || '音频上传失败'); }
       const result = await response.json();
       setRefAudioUrl(result.url);
@@ -804,9 +803,8 @@ export default function FissionPage() {
       if (useRefVideo && validVideoUrls.length > 0) body.videoUrls = validVideoUrls;
       if (useRefAudio && refAudioUrl) body.audioUrls = [refAudioUrl];
 
-      const response = await fetch('/api/fission/seedance2', {
+      const response = await authFetch('/api/fission/seedance2', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
       if (!response.ok) { const err = await response.json(); throw new Error(err.error || '视频生成失败'); }
@@ -816,7 +814,7 @@ export default function FissionPage() {
       const maxWait = 10 * 60 * 1000;
       const startTime = Date.now();
       while (Date.now() - startTime < maxWait) {
-        const statusRes = await fetch(`/api/fission/task/${taskId}`);
+        const statusRes = await authFetch(`/api/fission/task/${taskId}`);
         const status = await statusRes.json();
         if (status.status === 'success' && status.url) {
           setGeneratedVideoUrl(status.url);

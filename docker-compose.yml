@@ -1,0 +1,63 @@
+services:
+  # MySQL 数据库
+  mysql:
+    image: mysql:latest
+    container_name: video-mysql
+    restart: unless-stopped
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: video_root_123
+      MYSQL_DATABASE: video_app
+      MYSQL_USER: video_user
+      MYSQL_PASSWORD: video_pass_123
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # 后端服务
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: video-server
+    restart: unless-stopped
+    ports:
+      - "3001:3001"
+    env_file:
+      - ./server/.env
+    volumes:
+      - uploads_data:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+    networks:
+      - app-network
+
+  # 前端服务（nginx）
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: video-client
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - server
+    networks:
+      - app-network
+
+volumes:
+  uploads_data:
+  mysql_data:
+
+networks:
+  app-network:
+    driver: bridge

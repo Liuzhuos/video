@@ -1,3 +1,5 @@
+import { authFetch } from './request';
+
 export interface VideoGenerateParams {
   imageUrls: string[];
   prompt: string;
@@ -15,9 +17,8 @@ export interface VideoTaskResult {
  * 异步提交视频生成任务
  */
 export async function generateVideoAsync(params: VideoGenerateParams): Promise<VideoTaskResult> {
-  const response = await fetch('/api/video/generate-async', {
+  const response = await authFetch('/api/video/generate-async', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(params),
   });
 
@@ -33,7 +34,7 @@ export async function generateVideoAsync(params: VideoGenerateParams): Promise<V
  * 查询视频任务状态
  */
 export async function checkVideoTask(taskId: string): Promise<VideoTaskResult> {
-  const response = await fetch(`/api/video/task/${taskId}`);
+  const response = await authFetch(`/api/video/task/${taskId}`);
 
   if (!response.ok) {
     const error = await response.json();

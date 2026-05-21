@@ -12,11 +12,43 @@
  *   全能图片pro(nano-banana-pro):     /openapi/v2/rhart-image-n-pro/edit
  */
 
+import { acquireKey, releaseKey, recordKeyError, PooledKey } from './apiKeyPool';
+import prisma from './prisma';
+
 /** 图片生成模型类型 */
 export type ImageModel = 'g' | 'v2' | 'pro';
 
 const BASE_URL = process.env.RUNNINGHUB_BASE_URL || 'https://www.runninghub.cn';
 
+/**
+ * 从 Key 池获取一个可用 Key，如果池为空则回退到环境变量
+ */
+async function getPooledKey(): Promise<{ apiKey: string; keyId: number | null }> {
+  const pooled = await acquireKey('runninghub');
+  if (pooled) {
+    return { apiKey: pooled.apiKey, keyId: pooled.id };
+  }
+
+  // 回退到环境变量（兼容旧配置）
+  const envKey = process.env.RUNNINGHUB_API_KEY;
+  if (envKey) {
+    console.warn('[RunningHub] Key 池无可用 Key，回退到环境变量');
+    return { apiKey: envKey, keyId: null };
+  }
+
+  throw new Error('无可用的 RunningHub API Key（池已满或未配置）');
+}
+
+/**
+ * 根据 keyId 从数据库获取对应的 apiKey（用于查询任务时保持 Key 一致）
+ */
+async function getApiKeyById(keyId: number | null | undefined): Promise<string | undefined> {
+  if (!keyId) return undefined;
+  const key = await prisma.apiKey.findUnique({ where: { id: keyId }, select: { apiKey: true } });
+  return key?.apiKey ?? undefined;
+}
+
+/** @deprecated 保留兼容，内部不再使用 */
 function getApiKey(): string {
   const key = process.env.RUNNINGHUB_API_KEY;
   if (!key) {
@@ -56,46 +88,59 @@ export async function createTextToImageTask(
   aspectRatio: string = '16:9',
   resolution: '1k' | '2k' | '4k' = '1k',
   model: ImageModel = 'g'
-): Promise<string> {
-  const apiKey = getApiKey();
+): Promise<{ taskId: string; keyId: number | null }> {
+  const { apiKey, keyId } = await getPooledKey();
   const endpoint = TEXT_TO_IMAGE_ENDPOINTS[model];
 
   const requestBody = { prompt, aspectRatio, resolution };
-  console.log(`[RunningHub] 文生图请求 (model=${model}):`, JSON.stringify(requestBody, null, 2));
+  console.log(`[RunningHub] 文生图请求 (model=${model}, keyId=${keyId}):`, JSON.stringify(requestBody, null, 2));
 
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  try {
+    const response = await fetch(`${BASE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`RunningHub 请求失败 (${response.status}): ${text}`);
+    if (!response.ok) {
+      const text = await response.text();
+      const errMsg = `RunningHub 请求失败 (${response.status}): ${text}`;
+      if (keyId) await recordKeyError(keyId, errMsg);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(errMsg);
+    }
+
+    const result: any = await response.json();
+    console.log('[RunningHub] 文生图响应:', JSON.stringify(result, null, 2));
+
+    const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
+    const msg = result.errorMessage ?? result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
+
+    if (!taskId) {
+      if (keyId) await recordKeyError(keyId, `创建任务失败: ${msg}`);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(`创建任务失败: ${msg}`);
+    }
+
+    return { taskId, keyId };
+  } catch (error: any) {
+    // 如果是网络错误等未预期异常，也要释放
+    if (keyId && error.message && !error.message.includes('RunningHub')) {
+      await recordKeyError(keyId, error.message);
+      await releaseKey(keyId);
+    }
+    throw error;
   }
-
-  const result: any = await response.json();
-  console.log('[RunningHub] 文生图响应:', JSON.stringify(result, null, 2));
-
-  // Standard Model API 直接返回 taskId
-  const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
-  const msg = result.errorMessage ?? result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
-
-  if (!taskId) {
-    throw new Error(`创建任务失败: ${msg}`);
-  }
-
-  return taskId;
 }
 
 /**
  * 查询任务状态
  */
-export async function checkTaskStatus(taskId: string): Promise<string> {
-  const apiKey = getApiKey();
+export async function checkTaskStatus(taskId: string, apiKeyOverride?: string): Promise<string> {
+  const apiKey = apiKeyOverride || getApiKey();
 
   const response = await fetch(`${BASE_URL}/task/openapi/status`, {
     method: 'POST',
@@ -120,8 +165,8 @@ export async function checkTaskStatus(taskId: string): Promise<string> {
 /**
  * 获取任务输出结果
  */
-export async function getTaskOutput(taskId: string): Promise<TaskOutputItem[]> {
-  const apiKey = getApiKey();
+export async function getTaskOutput(taskId: string, apiKeyOverride?: string): Promise<TaskOutputItem[]> {
+  const apiKey = apiKeyOverride || getApiKey();
 
   const response = await fetch(`${BASE_URL}/task/openapi/outputs`, {
     method: 'POST',
@@ -146,42 +191,59 @@ export async function getTaskOutput(taskId: string): Promise<TaskOutputItem[]> {
 
 /**
  * 轮询等待任务完成并返回结果图片URL
+ * @param keyId 如果提供，任务完成后自动释放 Key
  */
 export async function waitForTaskResult(
   taskId: string,
   maxWaitMs = 5 * 60 * 1000,
-  intervalMs = 3000
+  intervalMs = 3000,
+  keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
 
-  while (Date.now() - startTime < maxWaitMs) {
-    const status = await checkTaskStatus(taskId);
+  try {
+    while (Date.now() - startTime < maxWaitMs) {
+      const status = await checkTaskStatus(taskId);
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const imageOutput = outputs.find((o: any) =>
-        ['png', 'jpg', 'jpeg', 'webp'].includes(o.fileType)
-      );
+      if (status === 'SUCCESS' || status === 'COMPLETED') {
+        const outputs = await getTaskOutput(taskId);
+        const imageOutput = outputs.find((o: any) =>
+          ['png', 'jpg', 'jpeg', 'webp'].includes(o.fileType)
+        );
 
-      if (imageOutput) {
-        return imageOutput.fileUrl;
+        if (keyId) await releaseKey(keyId);
+
+        if (imageOutput) {
+          return imageOutput.fileUrl;
+        }
+
+        if (outputs.length > 0) {
+          return outputs[0].fileUrl;
+        }
+
+        throw new Error('任务完成但没有输出结果');
       }
 
-      if (outputs.length > 0) {
-        return outputs[0].fileUrl;
+      if (status === 'FAILED' || status === 'ERROR') {
+        if (keyId) {
+          await recordKeyError(keyId, '任务执行失败');
+          await releaseKey(keyId);
+        }
+        throw new Error('RunningHub 任务执行失败');
       }
 
-      throw new Error('任务完成但没有输出结果');
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    if (status === 'FAILED' || status === 'ERROR') {
-      throw new Error('RunningHub 任务执行失败');
+    if (keyId) await releaseKey(keyId);
+    throw new Error('任务超时（5分钟），请稍后重试');
+  } catch (error) {
+    // 确保异常时也释放
+    if (keyId) {
+      try { await releaseKey(keyId); } catch {}
     }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    throw error;
   }
-
-  throw new Error('任务超时（5分钟），请稍后重试');
 }
 
 
@@ -191,32 +253,49 @@ export async function waitForTaskResult(
 export async function waitForTextToImageResult(
   taskId: string,
   maxWaitMs = 5 * 60 * 1000,
-  intervalMs = 3000
+  intervalMs = 3000,
+  keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
+  // 使用创建任务时的同一个 Key 来查询，避免 "Task not found"
+  const queryApiKey = await getApiKeyById(keyId);
 
-  while (Date.now() - startTime < maxWaitMs) {
-    const result = await queryV2Task(taskId);
+  try {
+    while (Date.now() - startTime < maxWaitMs) {
+      const result = await queryV2Task(taskId, queryApiKey);
 
-    if (result.status === 'SUCCESS') {
-      const imageResult = result.results?.find(
-        (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
-      ) ?? result.results?.[0];
+      if (result.status === 'SUCCESS') {
+        if (keyId) await releaseKey(keyId);
 
-      if (imageResult?.url) {
-        return imageResult.url;
+        const imageResult = result.results?.find(
+          (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+        ) ?? result.results?.[0];
+
+        if (imageResult?.url) {
+          return imageResult.url;
+        }
+        throw new Error('文生图任务完成但没有输出图片');
       }
-      throw new Error('文生图任务完成但没有输出图片');
+
+      if (result.status === 'FAILED') {
+        if (keyId) {
+          await recordKeyError(keyId, result.errorMessage || '文生图任务失败');
+          await releaseKey(keyId);
+        }
+        throw new Error(`文生图任务失败: ${result.errorMessage || '未知错误'}`);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    if (result.status === 'FAILED') {
-      throw new Error(`文生图任务失败: ${result.errorMessage || '未知错误'}`);
+    if (keyId) await releaseKey(keyId);
+    throw new Error('文生图任务超时（5分钟），请稍后重试');
+  } catch (error) {
+    if (keyId) {
+      try { await releaseKey(keyId); } catch {}
     }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    throw error;
   }
-
-  throw new Error('文生图任务超时（5分钟），请稍后重试');
 }
 
 /**
@@ -230,8 +309,8 @@ export interface V2QueryResult {
   results: Array<{ url: string | null; outputType: string | null; text: string | null }> | null;
 }
 
-export async function queryV2Task(taskId: string): Promise<V2QueryResult> {
-  const apiKey = getApiKey();
+export async function queryV2Task(taskId: string, apiKeyOverride?: string): Promise<V2QueryResult> {
+  const apiKey = apiKeyOverride || getApiKey();
 
   const response = await fetch(`${BASE_URL}/openapi/v2/query`, {
     method: 'POST',
@@ -262,38 +341,50 @@ export async function createImageToImageTask(
   aspectRatio: string = '16:9',
   resolution: '1k' | '2k' | '4k' = '1k',
   model: ImageModel = 'g'
-): Promise<string> {
-  const apiKey = getApiKey();
+): Promise<{ taskId: string; keyId: number | null }> {
+  const { apiKey, keyId } = await getPooledKey();
   const endpoint = IMAGE_TO_IMAGE_ENDPOINTS[model];
 
-  // pro 模型不支持 quality 参数，g/v2 也不需要（廉价版无此参数）
   const requestBody = { prompt, imageUrls, aspectRatio, resolution };
-  console.log(`[RunningHub] 图生图请求 (model=${model}):`, JSON.stringify(requestBody, null, 2));
+  console.log(`[RunningHub] 图生图请求 (model=${model}, keyId=${keyId}):`, JSON.stringify(requestBody, null, 2));
 
-  const response = await fetch(`${BASE_URL}${endpoint}`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+  try {
+    const response = await fetch(`${BASE_URL}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`图生图请求失败 (${response.status}): ${text}`);
+    if (!response.ok) {
+      const text = await response.text();
+      const errMsg = `图生图请求失败 (${response.status}): ${text}`;
+      if (keyId) await recordKeyError(keyId, errMsg);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(errMsg);
+    }
+
+    const result: any = await response.json();
+    console.log('[RunningHub] 图生图响应:', JSON.stringify(result, null, 2));
+
+    const taskId = result.taskId ?? result.data?.taskId;
+    if (!taskId) {
+      const msg = result.errorMessage ?? result.msg ?? JSON.stringify(result);
+      if (keyId) await recordKeyError(keyId, `创建图生图任务失败: ${msg}`);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(`创建图生图任务失败: ${msg}`);
+    }
+
+    return { taskId, keyId };
+  } catch (error: any) {
+    if (keyId && error.message && !error.message.includes('图生图')) {
+      await recordKeyError(keyId, error.message);
+      await releaseKey(keyId);
+    }
+    throw error;
   }
-
-  const result: any = await response.json();
-  console.log('[RunningHub] 图生图响应:', JSON.stringify(result, null, 2));
-
-  const taskId = result.taskId ?? result.data?.taskId;
-  if (!taskId) {
-    const msg = result.errorMessage ?? result.msg ?? JSON.stringify(result);
-    throw new Error(`创建图生图任务失败: ${msg}`);
-  }
-
-  return taskId;
 }
 
 /**
@@ -302,32 +393,49 @@ export async function createImageToImageTask(
 export async function waitForImageToImageResult(
   taskId: string,
   maxWaitMs = 5 * 60 * 1000,
-  intervalMs = 3000
+  intervalMs = 3000,
+  keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
+  // 使用创建任务时的同一个 Key 来查询，避免 "Task not found"
+  const queryApiKey = await getApiKeyById(keyId);
 
-  while (Date.now() - startTime < maxWaitMs) {
-    const result = await queryV2Task(taskId);
+  try {
+    while (Date.now() - startTime < maxWaitMs) {
+      const result = await queryV2Task(taskId, queryApiKey);
 
-    if (result.status === 'SUCCESS') {
-      const imageResult = result.results?.find(
-        (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
-      ) ?? result.results?.[0];
+      if (result.status === 'SUCCESS') {
+        if (keyId) await releaseKey(keyId);
 
-      if (imageResult?.url) {
-        return imageResult.url;
+        const imageResult = result.results?.find(
+          (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+        ) ?? result.results?.[0];
+
+        if (imageResult?.url) {
+          return imageResult.url;
+        }
+        throw new Error('图生图任务完成但没有输出图片');
       }
-      throw new Error('图生图任务完成但没有输出图片');
+
+      if (result.status === 'FAILED') {
+        if (keyId) {
+          await recordKeyError(keyId, result.errorMessage || '图生图任务失败');
+          await releaseKey(keyId);
+        }
+        throw new Error(`图生图任务失败: ${result.errorMessage || '未知错误'}`);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    if (result.status === 'FAILED') {
-      throw new Error(`图生图任务失败: ${result.errorMessage || '未知错误'}`);
+    if (keyId) await releaseKey(keyId);
+    throw new Error('图生图任务超时（5分钟），请稍后重试');
+  } catch (error) {
+    if (keyId) {
+      try { await releaseKey(keyId); } catch {}
     }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    throw error;
   }
-
-  throw new Error('图生图任务超时（5分钟），请稍后重试');
 }
 
 /**
@@ -340,7 +448,7 @@ export async function createGptImage2Task(
   aspectRatio: string = '16:9',
   resolution: '1k' | '2k' | '4k' = '1k',
   _quality: 'low' | 'medium' | 'high' = 'medium'
-): Promise<string> {
+): Promise<{ taskId: string; keyId: number | null }> {
   return createImageToImageTask(imageUrls, prompt, aspectRatio, resolution, 'g');
 }
 
@@ -357,53 +465,56 @@ export async function waitForGptImage2Result(
 
 /**
  * 调用全能视频G (reference-to-video) 生成视频
- * @param imageUrls 参考图片URL列表
- * @param prompt 视频描述提示词
- * @param duration 视频时长（秒），默认6
- * @param resolution 分辨率，默认720p
  */
 export async function createReferenceToVideoTask(
   imageUrls: string[],
   prompt: string,
   duration: string = '6',
   resolution: string = '720p'
-): Promise<string> {
-  const apiKey = getApiKey();
+): Promise<{ taskId: string; keyId: number | null }> {
+  const { apiKey, keyId } = await getPooledKey();
 
-  const requestBody = {
-    imageUrls,
-    prompt,
-    duration,
-    resolution,
-  };
+  const requestBody = { imageUrls, prompt, duration, resolution };
+  console.log(`[RunningHub] 视频生成请求体 (keyId=${keyId}):`, JSON.stringify(requestBody, null, 2));
 
-  console.log('[RunningHub] 视频生成请求体:', JSON.stringify(requestBody, null, 2));
+  try {
+    const response = await fetch(`${BASE_URL}/openapi/v2/rhart-video-g-official/reference-to-video`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(requestBody),
+    });
 
-  const response = await fetch(`${BASE_URL}/openapi/v2/rhart-video-g-official/reference-to-video`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(requestBody),
-  });
+    if (!response.ok) {
+      const text = await response.text();
+      const errMsg = `RunningHub 视频请求失败 (${response.status}): ${text}`;
+      if (keyId) await recordKeyError(keyId, errMsg);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(errMsg);
+    }
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`RunningHub 视频请求失败 (${response.status}): ${text}`);
+    const result: any = await response.json();
+    console.log('[RunningHub] 视频生成响应:', JSON.stringify(result, null, 2));
+
+    const taskId = result.data?.taskId ?? result.taskId ?? result.data?.task_id;
+    const msg = result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
+
+    if (!taskId) {
+      if (keyId) await recordKeyError(keyId, `创建视频任务失败: ${msg}`);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(`创建视频任务失败: ${msg}`);
+    }
+
+    return { taskId, keyId };
+  } catch (error: any) {
+    if (keyId && error.message && !error.message.includes('视频')) {
+      await recordKeyError(keyId, error.message);
+      await releaseKey(keyId);
+    }
+    throw error;
   }
-
-  const result: any = await response.json();
-  console.log('[RunningHub] 视频生成响应:', JSON.stringify(result, null, 2));
-
-  const taskId = result.data?.taskId ?? result.taskId ?? result.data?.task_id;
-  const msg = result.msg ?? result.message ?? result.error ?? JSON.stringify(result);
-
-  if (!taskId) {
-    throw new Error(`创建视频任务失败: ${msg}`);
-  }
-
-  return taskId;
 }
 
 /**
@@ -411,40 +522,54 @@ export async function createReferenceToVideoTask(
  */
 export async function waitForVideoResult(
   taskId: string,
-  maxWaitMs = 10 * 60 * 1000, // 视频生成时间更长，10分钟
-  intervalMs = 5000
+  maxWaitMs = 10 * 60 * 1000,
+  intervalMs = 5000,
+  keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
 
-  while (Date.now() - startTime < maxWaitMs) {
-    const status = await checkTaskStatus(taskId);
+  try {
+    while (Date.now() - startTime < maxWaitMs) {
+      const status = await checkTaskStatus(taskId);
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const videoOutput = outputs.find((o: any) =>
-        ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
-      );
+      if (status === 'SUCCESS' || status === 'COMPLETED') {
+        const outputs = await getTaskOutput(taskId);
+        if (keyId) await releaseKey(keyId);
 
-      if (videoOutput) {
-        return videoOutput.fileUrl;
+        const videoOutput = outputs.find((o: any) =>
+          ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
+        );
+
+        if (videoOutput) {
+          return videoOutput.fileUrl;
+        }
+
+        if (outputs.length > 0) {
+          return outputs[0].fileUrl;
+        }
+
+        throw new Error('视频任务完成但没有输出结果');
       }
 
-      // 没有视频类型就返回第一个
-      if (outputs.length > 0) {
-        return outputs[0].fileUrl;
+      if (status === 'FAILED' || status === 'ERROR') {
+        if (keyId) {
+          await recordKeyError(keyId, '视频任务执行失败');
+          await releaseKey(keyId);
+        }
+        throw new Error('RunningHub 视频任务执行失败');
       }
 
-      throw new Error('视频任务完成但没有输出结果');
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    if (status === 'FAILED' || status === 'ERROR') {
-      throw new Error('RunningHub 视频任务执行失败');
+    if (keyId) await releaseKey(keyId);
+    throw new Error('视频任务超时（10分钟），请稍后重试');
+  } catch (error) {
+    if (keyId) {
+      try { await releaseKey(keyId); } catch {}
     }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    throw error;
   }
-
-  throw new Error('视频任务超时（10分钟），请稍后重试');
 }
 
 // ==================== Seedance 2.0 ====================
@@ -472,10 +597,9 @@ export interface Seedance2Params {
 
 /**
  * 创建 Seedance 2.0 多模态视频任务
- * 接口: POST /rhart-video/sparkvideo-2.0/multimodal-video
  */
-export async function createSeedance2Task(params: Seedance2Params): Promise<string> {
-  const apiKey = getApiKey();
+export async function createSeedance2Task(params: Seedance2Params): Promise<{ taskId: string; keyId: number | null }> {
+  const { apiKey, keyId } = await getPooledKey();
 
   const body: Record<string, any> = {
     prompt: params.prompt,
@@ -490,32 +614,45 @@ export async function createSeedance2Task(params: Seedance2Params): Promise<stri
   if (params.ratio) body.ratio = params.ratio;
   if (params.realPersonMode !== undefined) body.realPersonMode = params.realPersonMode;
 
-  console.log('[RunningHub] Seedance2 请求体:', JSON.stringify(body, null, 2));
+  console.log(`[RunningHub] Seedance2 请求体 (keyId=${keyId}):`, JSON.stringify(body, null, 2));
 
-  const response = await fetch(`${BASE_URL}/openapi/v2/bytedance/seedance-2.0-global/multimodal-video`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
+  try {
+    const response = await fetch(`${BASE_URL}/openapi/v2/bytedance/seedance-2.0-global/multimodal-video`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${apiKey}`,
+      },
+      body: JSON.stringify(body),
+    });
 
-  if (!response.ok) {
-    const text = await response.text();
-    throw new Error(`Seedance2 请求失败 (${response.status}): ${text}`);
+    if (!response.ok) {
+      const text = await response.text();
+      const errMsg = `Seedance2 请求失败 (${response.status}): ${text}`;
+      if (keyId) await recordKeyError(keyId, errMsg);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(errMsg);
+    }
+
+    const result: any = await response.json();
+    console.log('[RunningHub] Seedance2 响应:', JSON.stringify(result, null, 2));
+
+    const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
+    if (!taskId) {
+      const msg = result.errorMessage ?? result.msg ?? result.message ?? JSON.stringify(result);
+      if (keyId) await recordKeyError(keyId, `创建 Seedance2 任务失败: ${msg}`);
+      if (keyId) await releaseKey(keyId);
+      throw new Error(`创建 Seedance2 任务失败: ${msg}`);
+    }
+
+    return { taskId, keyId };
+  } catch (error: any) {
+    if (keyId && error.message && !error.message.includes('Seedance2')) {
+      await recordKeyError(keyId, error.message);
+      await releaseKey(keyId);
+    }
+    throw error;
   }
-
-  const result: any = await response.json();
-  console.log('[RunningHub] Seedance2 响应:', JSON.stringify(result, null, 2));
-
-  const taskId = result.taskId ?? result.data?.taskId ?? result.data?.task_id;
-  if (!taskId) {
-    const msg = result.errorMessage ?? result.msg ?? result.message ?? JSON.stringify(result);
-    throw new Error(`创建 Seedance2 任务失败: ${msg}`);
-  }
-
-  return taskId;
 }
 
 /**
@@ -524,27 +661,44 @@ export async function createSeedance2Task(params: Seedance2Params): Promise<stri
 export async function waitForSeedance2Result(
   taskId: string,
   maxWaitMs = 10 * 60 * 1000,
-  intervalMs = 5000
+  intervalMs = 5000,
+  keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
+  // 使用创建任务时的同一个 Key 来查询，避免 "Task not found"
+  const queryApiKey = await getApiKeyById(keyId);
 
-  while (Date.now() - startTime < maxWaitMs) {
-    const result = await queryV2Task(taskId);
+  try {
+    while (Date.now() - startTime < maxWaitMs) {
+      const result = await queryV2Task(taskId, queryApiKey);
 
-    if (result.status === 'SUCCESS') {
-      const videoOutput = result.results?.find(
-        (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
-      ) ?? result.results?.find((r) => r.url);
-      if (videoOutput?.url) return videoOutput.url;
-      throw new Error('Seedance2 任务完成但没有视频输出');
+      if (result.status === 'SUCCESS') {
+        if (keyId) await releaseKey(keyId);
+
+        const videoOutput = result.results?.find(
+          (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+        ) ?? result.results?.find((r) => r.url);
+        if (videoOutput?.url) return videoOutput.url;
+        throw new Error('Seedance2 任务完成但没有视频输出');
+      }
+
+      if (result.status === 'FAILED') {
+        if (keyId) {
+          await recordKeyError(keyId, result.errorMessage || 'Seedance2 任务失败');
+          await releaseKey(keyId);
+        }
+        throw new Error(`Seedance2 任务失败: ${result.errorMessage || '未知错误'}`);
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
     }
 
-    if (result.status === 'FAILED') {
-      throw new Error(`Seedance2 任务失败: ${result.errorMessage || '未知错误'}`);
+    if (keyId) await releaseKey(keyId);
+    throw new Error('Seedance2 任务超时（10分钟），请稍后重试');
+  } catch (error) {
+    if (keyId) {
+      try { await releaseKey(keyId); } catch {}
     }
-
-    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    throw error;
   }
-
-  throw new Error('Seedance2 任务超时（10分钟），请稍后重试');
 }

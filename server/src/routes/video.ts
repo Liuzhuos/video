@@ -5,8 +5,13 @@ import {
   checkTaskStatus,
   getTaskOutput,
 } from '../services/runninghub';
+import prisma from '../services/prisma';
+import { optionalAuth, AuthRequest } from '../middleware/auth';
 
 export const videoRouter = Router();
+
+// 所有视频路由使用可选认证
+videoRouter.use(optionalAuth);
 
 interface VideoGenerateRequest {
   imageUrls: string[];
@@ -16,7 +21,7 @@ interface VideoGenerateRequest {
 }
 
 // POST /api/video/generate - 生成视频（同步等待结果）
-videoRouter.post('/generate', async (req: Request, res: Response) => {
+videoRouter.post('/generate', async (req: AuthRequest, res: Response) => {
   try {
     const { imageUrls, prompt, duration, resolution } = req.body as VideoGenerateRequest;
 
@@ -33,7 +38,7 @@ videoRouter.post('/generate', async (req: Request, res: Response) => {
     console.log(`[视频生成] 图片数: ${imageUrls.length}, prompt: ${prompt}`);
 
     // 1. 创建任务
-    const taskId = await createReferenceToVideoTask(
+    const { taskId, keyId } = await createReferenceToVideoTask(
       imageUrls,
       prompt,
       duration || '6',
@@ -42,8 +47,22 @@ videoRouter.post('/generate', async (req: Request, res: Response) => {
     console.log(`[视频生成] 任务已创建: ${taskId}`);
 
     // 2. 轮询等待结果
-    const videoUrl = await waitForVideoResult(taskId);
+    const videoUrl = await waitForVideoResult(taskId, undefined, undefined, keyId);
     console.log(`[视频生成] 生成完成: ${videoUrl}`);
+
+    // 保存到数据库
+    if (req.userId) {
+      await prisma.media.create({
+        data: {
+          type: 'VIDEO',
+          filename: `video_${taskId}.mp4`,
+          url: videoUrl,
+          prompt,
+          duration: parseFloat(duration || '6'),
+          userId: req.userId,
+        },
+      });
+    }
 
     res.json({
       url: videoUrl,
@@ -59,8 +78,11 @@ videoRouter.post('/generate', async (req: Request, res: Response) => {
   }
 });
 
+// 内存中缓存异步任务的元数据（prompt、duration、userId），供轮询时保存数据库使用
+const asyncTaskMeta = new Map<string, { prompt: string; duration: string; userId?: number }>();
+
 // POST /api/video/generate-async - 异步生成视频（立即返回taskId）
-videoRouter.post('/generate-async', async (req: Request, res: Response) => {
+videoRouter.post('/generate-async', async (req: AuthRequest, res: Response) => {
   try {
     const { imageUrls, prompt, duration, resolution } = req.body as VideoGenerateRequest;
 
@@ -86,12 +108,19 @@ videoRouter.post('/generate-async', async (req: Request, res: Response) => {
       return;
     }
 
-    const taskId = await createReferenceToVideoTask(
+    const { taskId } = await createReferenceToVideoTask(
       validUrls,
       prompt,
       duration || '6',
       resolution || '720p'
     );
+
+    // 缓存任务元数据，供轮询成功时保存到数据库
+    asyncTaskMeta.set(taskId, {
+      prompt,
+      duration: duration || '6',
+      userId: req.userId,
+    });
 
     res.json({
       taskId,
@@ -107,7 +136,7 @@ videoRouter.post('/generate-async', async (req: Request, res: Response) => {
 });
 
 // GET /api/video/task/:taskId - 查询视频任务状态和结果
-videoRouter.get('/task/:taskId', async (req: Request, res: Response) => {
+videoRouter.get('/task/:taskId', async (req: AuthRequest, res: Response) => {
   try {
     const taskId = req.params.taskId as string;
     const status = await checkTaskStatus(taskId);
@@ -118,13 +147,41 @@ videoRouter.get('/task/:taskId', async (req: Request, res: Response) => {
         ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
       );
 
+      const videoUrl = videoOutput?.fileUrl || outputs[0]?.fileUrl;
+
+      // 保存到数据库
+      const meta = asyncTaskMeta.get(taskId);
+      const userId = req.userId || meta?.userId;
+      if (userId && videoUrl) {
+        // 避免重复保存：检查是否已存在
+        const existing = await prisma.media.findFirst({
+          where: { url: videoUrl, userId },
+        });
+        if (!existing) {
+          await prisma.media.create({
+            data: {
+              type: 'VIDEO',
+              filename: `video_${taskId}.mp4`,
+              url: videoUrl,
+              prompt: meta?.prompt || '',
+              duration: parseFloat(meta?.duration || '6'),
+              userId,
+            },
+          });
+          console.log(`[视频生成] 已保存到数据库: taskId=${taskId}, userId=${userId}`);
+        }
+        // 清理缓存
+        asyncTaskMeta.delete(taskId);
+      }
+
       res.json({
         taskId,
         status: 'success',
-        url: videoOutput?.fileUrl || outputs[0]?.fileUrl,
+        url: videoUrl,
         outputs,
       });
     } else if (status === 'FAILED' || status === 'ERROR') {
+      asyncTaskMeta.delete(taskId);
       res.json({ taskId, status: 'failed' });
     } else {
       res.json({ taskId, status: 'running' });

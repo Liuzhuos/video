@@ -91,6 +91,10 @@ chatRouter.post('/polish-prompt', async (req: Request, res: Response) => {
   try {
     const { imageUrls, videoUrls, currentPrompt, mode } = req.body;
 
+    console.log(`[提示词润色] mode: ${mode}, prompt: ${currentPrompt}`);
+    if (imageUrls?.length) console.log(`[提示词润色] 图片URLs:`, imageUrls);
+    if (videoUrls?.length) console.log(`[提示词润色] 视频URLs:`, videoUrls);
+
     const hasMedia = (imageUrls && imageUrls.length > 0) || (videoUrls && videoUrls.length > 0);
 
     if (!hasMedia && !currentPrompt?.trim()) {
