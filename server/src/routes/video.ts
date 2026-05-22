@@ -2,9 +2,11 @@ import { Router, Request, Response } from 'express';
 import {
   createReferenceToVideoTask,
   waitForVideoResult,
-  checkTaskStatus,
-  getTaskOutput,
+  queryV2Task,
+  getApiKeyByTaskId,
+  getKeyIdByTaskId,
 } from '../services/runninghub';
+import { releaseKey, recordKeyError } from '../services/apiKeyPool';
 import prisma from '../services/prisma';
 import { optionalAuth, AuthRequest } from '../middleware/auth';
 
@@ -139,15 +141,22 @@ videoRouter.post('/generate-async', async (req: AuthRequest, res: Response) => {
 videoRouter.get('/task/:taskId', async (req: AuthRequest, res: Response) => {
   try {
     const taskId = req.params.taskId as string;
-    const status = await checkTaskStatus(taskId);
+    // 使用创建任务时的同一个 Key 来查询
+    const apiKey = await getApiKeyByTaskId(taskId);
+    const result = await queryV2Task(taskId, apiKey);
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const videoOutput = outputs.find((o: any) =>
-        ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
-      );
+    if (result.status === 'SUCCESS') {
+      // 释放 Key
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) {
+        await releaseKey(keyId);
+      }
 
-      const videoUrl = videoOutput?.fileUrl || outputs[0]?.fileUrl;
+      const videoOutput = result.results?.find(
+        (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.find((r) => r.url);
+
+      const videoUrl = videoOutput?.url;
 
       // 保存到数据库
       const meta = asyncTaskMeta.get(taskId);
@@ -178,11 +187,16 @@ videoRouter.get('/task/:taskId', async (req: AuthRequest, res: Response) => {
         taskId,
         status: 'success',
         url: videoUrl,
-        outputs,
       });
-    } else if (status === 'FAILED' || status === 'ERROR') {
+    } else if (result.status === 'FAILED') {
+      // 释放 Key
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) {
+        await recordKeyError(keyId, result.errorMessage || '视频任务失败');
+        await releaseKey(keyId);
+      }
       asyncTaskMeta.delete(taskId);
-      res.json({ taskId, status: 'failed' });
+      res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });
     }

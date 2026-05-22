@@ -48,6 +48,32 @@ async function getApiKeyById(keyId: number | null | undefined): Promise<string |
   return key?.apiKey ?? undefined;
 }
 
+/**
+ * taskId → keyId 映射（用于前端轮询场景，查询时能找到创建任务使用的 Key）
+ * 任务完成或超时后自动清理
+ */
+const taskKeyMap = new Map<string, number>();
+
+/** 记录 taskId 对应的 keyId */
+export function registerTaskKey(taskId: string, keyId: number | null): void {
+  if (keyId) {
+    taskKeyMap.set(taskId, keyId);
+    // 15 分钟后自动清理，防止内存泄漏
+    setTimeout(() => taskKeyMap.delete(taskId), 15 * 60 * 1000);
+  }
+}
+
+/** 根据 taskId 获取对应的 apiKey */
+export async function getApiKeyByTaskId(taskId: string): Promise<string | undefined> {
+  const keyId = taskKeyMap.get(taskId);
+  return getApiKeyById(keyId);
+}
+
+/** 根据 taskId 获取对应的 keyId（用于释放） */
+export function getKeyIdByTaskId(taskId: string): number | undefined {
+  return taskKeyMap.get(taskId);
+}
+
 /** @deprecated 保留兼容，内部不再使用 */
 function getApiKey(): string {
   const key = process.env.RUNNINGHUB_API_KEY;
@@ -507,6 +533,9 @@ export async function createReferenceToVideoTask(
       throw new Error(`创建视频任务失败: ${msg}`);
     }
 
+    // 注册 taskId → keyId 映射，供前端轮询时使用同一个 Key 查询
+    registerTaskKey(taskId, keyId);
+
     return { taskId, keyId };
   } catch (error: any) {
     if (keyId && error.message && !error.message.includes('视频')) {
@@ -518,7 +547,7 @@ export async function createReferenceToVideoTask(
 }
 
 /**
- * 轮询等待视频任务完成并返回视频URL
+ * 轮询等待视频任务完成并返回视频URL（使用 V2 查询 + 正确的 Key）
  */
 export async function waitForVideoResult(
   taskId: string,
@@ -527,36 +556,33 @@ export async function waitForVideoResult(
   keyId?: number | null
 ): Promise<string> {
   const startTime = Date.now();
+  // 使用创建任务时的同一个 Key 来查询，避免 "Task not found"
+  const queryApiKey = await getApiKeyById(keyId);
 
   try {
     while (Date.now() - startTime < maxWaitMs) {
-      const status = await checkTaskStatus(taskId);
+      const result = await queryV2Task(taskId, queryApiKey);
 
-      if (status === 'SUCCESS' || status === 'COMPLETED') {
-        const outputs = await getTaskOutput(taskId);
+      if (result.status === 'SUCCESS') {
         if (keyId) await releaseKey(keyId);
 
-        const videoOutput = outputs.find((o: any) =>
-          ['mp4', 'mov', 'webm', 'avi'].includes(o.fileType)
-        );
+        const videoOutput = result.results?.find(
+          (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+        ) ?? result.results?.find((r) => r.url);
 
-        if (videoOutput) {
-          return videoOutput.fileUrl;
-        }
-
-        if (outputs.length > 0) {
-          return outputs[0].fileUrl;
+        if (videoOutput?.url) {
+          return videoOutput.url;
         }
 
         throw new Error('视频任务完成但没有输出结果');
       }
 
-      if (status === 'FAILED' || status === 'ERROR') {
+      if (result.status === 'FAILED') {
         if (keyId) {
-          await recordKeyError(keyId, '视频任务执行失败');
+          await recordKeyError(keyId, result.errorMessage || '视频任务执行失败');
           await releaseKey(keyId);
         }
-        throw new Error('RunningHub 视频任务执行失败');
+        throw new Error(`RunningHub 视频任务执行失败: ${result.errorMessage || '未知错误'}`);
       }
 
       await new Promise((resolve) => setTimeout(resolve, intervalMs));
@@ -644,6 +670,9 @@ export async function createSeedance2Task(params: Seedance2Params): Promise<{ ta
       if (keyId) await releaseKey(keyId);
       throw new Error(`创建 Seedance2 任务失败: ${msg}`);
     }
+
+    // 注册 taskId → keyId 映射，供前端轮询时使用同一个 Key 查询
+    registerTaskKey(taskId, keyId);
 
     return { taskId, keyId };
   } catch (error: any) {

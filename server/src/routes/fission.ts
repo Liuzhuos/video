@@ -5,13 +5,12 @@ import {
   createTextToImageTask,
   waitForTextToImageResult,
   createReferenceToVideoTask,
-  waitForVideoResult,
-  checkTaskStatus,
-  getTaskOutput,
   createImageToImageTask,
   waitForImageToImageResult,
   createSeedance2Task,
   queryV2Task,
+  getApiKeyByTaskId,
+  getKeyIdByTaskId,
   type ImageModel,
 } from '../services/runninghub';
 import { uploadBufferToOSS } from '../services/oss';
@@ -274,9 +273,18 @@ fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
 fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   try {
     const taskId = req.params.taskId as string;
-    const result = await queryV2Task(taskId);
+    // 使用创建任务时的同一个 Key 来查询
+    const apiKey = await getApiKeyByTaskId(taskId);
+    const result = await queryV2Task(taskId, apiKey);
 
     if (result.status === 'SUCCESS') {
+      // 任务完成，释放 Key
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) {
+        const { releaseKey } = await import('../services/apiKeyPool');
+        await releaseKey(keyId);
+      }
+
       const videoOutput = result.results?.find(
         (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
       ) ?? result.results?.find((r) => r.url);
@@ -287,6 +295,14 @@ fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
         url: videoOutput?.url,
       });
     } else if (result.status === 'FAILED') {
+      // 任务失败，释放 Key
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) {
+        const { releaseKey, recordKeyError } = await import('../services/apiKeyPool');
+        await recordKeyError(keyId, result.errorMessage || '任务失败');
+        await releaseKey(keyId);
+      }
+
       res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });

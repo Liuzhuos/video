@@ -1,7 +1,7 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, type ImageModel } from '../services/runninghub';
+import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, registerTaskKey, type ImageModel } from '../services/runninghub';
 import { uploadBufferToOSS } from '../services/oss';
 import prisma from '../services/prisma';
 import { optionalAuth, AuthRequest } from '../middleware/auth';
@@ -129,7 +129,9 @@ imageRouter.post('/generate-async', async (req: Request, res: Response) => {
       return;
     }
 
-    const { taskId } = await createTextToImageTask(prompt);
+    const { taskId, keyId } = await createTextToImageTask(prompt);
+    // 注册映射，供前端轮询时使用同一个 Key 查询
+    registerTaskKey(taskId, keyId);
 
     res.json({
       taskId,
@@ -150,23 +152,33 @@ imageRouter.get('/task/:taskId', async (req: Request, res: Response) => {
   try {
     const taskId = req.params.taskId as string;
 
-    const { checkTaskStatus, getTaskOutput } = await import('../services/runninghub');
-    const status = await checkTaskStatus(taskId);
+    const { queryV2Task, getApiKeyByTaskId, getKeyIdByTaskId } = await import('../services/runninghub');
+    const { releaseKey, recordKeyError } = await import('../services/apiKeyPool');
 
-    if (status === 'SUCCESS' || status === 'COMPLETED') {
-      const outputs = await getTaskOutput(taskId);
-      const imageOutput = outputs.find(
-        (o) => ['png', 'jpg', 'jpeg', 'webp'].includes(o.fileType)
-      );
+    // 使用创建任务时的同一个 Key 来查询
+    const apiKey = await getApiKeyByTaskId(taskId);
+    const result = await queryV2Task(taskId, apiKey);
+
+    if (result.status === 'SUCCESS') {
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) await releaseKey(keyId);
+
+      const imageOutput = result.results?.find(
+        (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+      ) ?? result.results?.find((r) => r.url);
 
       res.json({
         taskId,
         status: 'success',
-        url: imageOutput?.fileUrl || outputs[0]?.fileUrl,
-        outputs,
+        url: imageOutput?.url,
       });
-    } else if (status === 'FAILED' || status === 'ERROR') {
-      res.json({ taskId, status: 'failed' });
+    } else if (result.status === 'FAILED') {
+      const keyId = getKeyIdByTaskId(taskId);
+      if (keyId) {
+        await recordKeyError(keyId, result.errorMessage || '图片任务失败');
+        await releaseKey(keyId);
+      }
+      res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });
     }
