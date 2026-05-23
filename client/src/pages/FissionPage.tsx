@@ -972,7 +972,7 @@ function PrepareStep({
   onTogglePadSelect, onRemoveImage, onTextToImage, onImageUpload, onImageToImage,
   onRemoveSource, onTextToImagePromptChange, onImg2imgPromptChange,
   onAspectRatioChange, onResolutionChange, onT2iModelChange, onI2iModelChange,
-  onOpenCaptureModal, onAddToImg2imgSource, onEditImg2imgSource, onEditPadImage, onNext,
+  onOpenCaptureModal, onAddToImg2imgSource, onEditImg2imgSource, onEditPadImage: _onEditPadImage, onNext,
 }: {
   images: PreparedImage[];
   selectedPadIds: string[];
@@ -1209,7 +1209,7 @@ function PrepareStep({
 
 // ==================== 步骤2：生成视频（Seedance 2.0）====================
 function GenerateStep({
-  images, selectedPadIds, onTogglePadSelect, onRemoveImage, onAddImage,
+  images, selectedPadIds, onTogglePadSelect, onRemoveImage: _onRemoveImage, onAddImage,
   videoPrompt, videoDuration, videoResolution, videoRatio,
   generateAudio, realPersonMode, useRefVideo, useRefAudio,
   refVideoLocalUrl, refVideoUrl, refAudioLocalName, refAudioUrl,

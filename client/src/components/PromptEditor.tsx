@@ -6,7 +6,6 @@
  */
 import { useRef, useEffect, useCallback, useState } from 'react';
 import { Image as ImageIcon, Film, Music, Sparkles, Loader2 } from 'lucide-react';
-import ReactDOM from 'react-dom/client';
 import { polishPrompt } from '../api/chat';
 
 export type AssetType = 'image' | 'video' | 'audio';

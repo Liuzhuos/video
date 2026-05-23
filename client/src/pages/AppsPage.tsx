@@ -1,5 +1,5 @@
 import { useNavigate } from 'react-router-dom';
-import { Film, Image, Music, FileText, Bot, Wand2, Clapperboard } from 'lucide-react';
+import { Film, Image, Music, FileText, Bot, Clapperboard } from 'lucide-react';
 
 const apps = [
   {

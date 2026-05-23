@@ -1,7 +1,7 @@
 import { useState, useRef, useEffect, useCallback } from 'react';
-import { X, Pen, Type, ImageIcon, RotateCcw, RotateCw, Save, Minus, Plus } from 'lucide-react';
+import { X, Pen, Type, ImageIcon, RotateCcw, RotateCw, Save, Minus, Plus, Crop } from 'lucide-react';
 
-type Tool = 'pen' | 'text';
+type Tool = 'pen' | 'text' | 'crop';
 
 const COLORS = [
   '#ffffff', '#000000', '#ef4444', '#f97316', '#eab308',
@@ -35,6 +35,12 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
 
   // 显示用的归一化角度 (-180, 180]
   const displayRotation = ((((rotation % 360) + 540) % 360) - 180);
+
+  // 裁剪相关状态
+  const [cropMode, setCropMode] = useState(false);
+  const [cropRect, setCropRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const isCropping = useRef(false);
+  const cropCanvasRef = useRef<HTMLCanvasElement>(null!); // 裁剪遮罩层
 
   const isDrawing = useRef(false);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
@@ -73,6 +79,13 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
       overlay.width = w;
       overlay.height = h;
 
+      // 同步裁剪遮罩层尺寸
+      const cropCanvas = cropCanvasRef.current;
+      if (cropCanvas) {
+        cropCanvas.width = w;
+        cropCanvas.height = h;
+      }
+
       canvas.getContext('2d')!.drawImage(img, 0, 0, w, h);
       overlay.getContext('2d')!.clearRect(0, 0, w, h);
 
@@ -95,6 +108,11 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
         canvas.height = h;
         overlay.width = w;
         overlay.height = h;
+        const cropCanvas = cropCanvasRef.current;
+        if (cropCanvas) {
+          cropCanvas.width = w;
+          cropCanvas.height = h;
+        }
         canvas.getContext('2d')!.drawImage(img2, 0, 0, w, h);
         overlay.getContext('2d')!.clearRect(0, 0, w, h);
         if (resetHistory) { history.current = []; setCanUndo(false); }
@@ -202,6 +220,293 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
     setPendingValue('');
   }, [pendingText, pendingValue, color, fontSize, saveHistory]);
 
+  // ── 裁剪模式 ──
+  // 拖拽类型：创建新选区 / 移动整体 / 调整边角
+  type CropDragType = 'create' | 'move' | 'n' | 's' | 'e' | 'w' | 'nw' | 'ne' | 'sw' | 'se';
+  const cropDragType = useRef<CropDragType>('create');
+  const cropDragStart = useRef<{ x: number; y: number; rect: { x: number; y: number; w: number; h: number } } | null>(null);
+
+  // 进入裁剪模式
+  const enterCropMode = () => {
+    setCropMode(true);
+    setCropRect(null);
+  };
+
+  // 退出裁剪模式
+  const exitCropMode = () => {
+    setCropMode(false);
+    setCropRect(null);
+    // 清除裁剪遮罩层
+    const cropCanvas = cropCanvasRef.current;
+    if (cropCanvas) {
+      const ctx = cropCanvas.getContext('2d')!;
+      ctx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
+    }
+  };
+
+  // 绘制裁剪遮罩（暗色遮罩 + 选区透明）
+  const drawCropOverlay = useCallback((rect: { x: number; y: number; w: number; h: number } | null) => {
+    const cropCanvas = cropCanvasRef.current;
+    if (!cropCanvas) return;
+    const ctx = cropCanvas.getContext('2d')!;
+    const w = cropCanvas.width;
+    const h = cropCanvas.height;
+    ctx.clearRect(0, 0, w, h);
+
+    // 绘制半透明暗色遮罩覆盖整个画布
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.55)';
+    ctx.fillRect(0, 0, w, h);
+
+    if (rect && rect.w > 0 && rect.h > 0) {
+      // 清除选区部分（让选区恢复正常亮度）
+      ctx.clearRect(rect.x, rect.y, rect.w, rect.h);
+
+      // 绘制选区边框
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 2;
+      ctx.setLineDash([6, 3]);
+      ctx.strokeRect(rect.x, rect.y, rect.w, rect.h);
+      ctx.setLineDash([]);
+
+      // 绘制四角手柄
+      const handleSize = 8;
+      ctx.fillStyle = '#ffffff';
+      const corners = [
+        { x: rect.x, y: rect.y },
+        { x: rect.x + rect.w, y: rect.y },
+        { x: rect.x, y: rect.y + rect.h },
+        { x: rect.x + rect.w, y: rect.y + rect.h },
+      ];
+      corners.forEach(({ x, y }) => {
+        ctx.fillRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+      });
+
+      // 绘制四边中点手柄
+      const midHandles = [
+        { x: rect.x + rect.w / 2, y: rect.y },           // 上中
+        { x: rect.x + rect.w / 2, y: rect.y + rect.h },  // 下中
+        { x: rect.x, y: rect.y + rect.h / 2 },           // 左中
+        { x: rect.x + rect.w, y: rect.y + rect.h / 2 },  // 右中
+      ];
+      midHandles.forEach(({ x, y }) => {
+        ctx.fillRect(x - handleSize / 2, y - handleSize / 2, handleSize, handleSize);
+      });
+    }
+  }, []);
+
+  // 裁剪模式下获取坐标（基于 cropCanvas）
+  const getCropPos = (e: React.MouseEvent): { x: number; y: number } => {
+    const cropCanvas = cropCanvasRef.current;
+    if (!cropCanvas) return { x: 0, y: 0 };
+    const rect = cropCanvas.getBoundingClientRect();
+    const scaleX = cropCanvas.width / rect.width;
+    const scaleY = cropCanvas.height / rect.height;
+    return {
+      x: (e.clientX - rect.left) * scaleX,
+      y: (e.clientY - rect.top) * scaleY,
+    };
+  };
+
+  // 判断鼠标位置对应的拖拽类型
+  const getHitZone = (pos: { x: number; y: number }, rect: { x: number; y: number; w: number; h: number }): CropDragType => {
+    const threshold = 10; // 手柄命中范围（canvas 像素）
+
+    const { x, y, w, h } = rect;
+    const px = pos.x;
+    const py = pos.y;
+
+    // 检测四角
+    if (Math.abs(px - x) < threshold && Math.abs(py - y) < threshold) return 'nw';
+    if (Math.abs(px - (x + w)) < threshold && Math.abs(py - y) < threshold) return 'ne';
+    if (Math.abs(px - x) < threshold && Math.abs(py - (y + h)) < threshold) return 'sw';
+    if (Math.abs(px - (x + w)) < threshold && Math.abs(py - (y + h)) < threshold) return 'se';
+
+    // 检测四边
+    if (Math.abs(py - y) < threshold && px > x + threshold && px < x + w - threshold) return 'n';
+    if (Math.abs(py - (y + h)) < threshold && px > x + threshold && px < x + w - threshold) return 's';
+    if (Math.abs(px - x) < threshold && py > y + threshold && py < y + h - threshold) return 'w';
+    if (Math.abs(px - (x + w)) < threshold && py > y + threshold && py < y + h - threshold) return 'e';
+
+    // 检测内部（移动）
+    if (px > x && px < x + w && py > y && py < y + h) return 'move';
+
+    // 外部：创建新选区
+    return 'create';
+  };
+
+  // 根据拖拽类型返回 CSS cursor
+  const getCropCursor = (pos: { x: number; y: number }): string => {
+    if (!cropRect || cropRect.w < 5 || cropRect.h < 5) return 'crosshair';
+    const zone = getHitZone(pos, cropRect);
+    switch (zone) {
+      case 'nw': case 'se': return 'nwse-resize';
+      case 'ne': case 'sw': return 'nesw-resize';
+      case 'n': case 's': return 'ns-resize';
+      case 'e': case 'w': return 'ew-resize';
+      case 'move': return 'move';
+      default: return 'crosshair';
+    }
+  };
+
+  // 裁剪鼠标按下
+  const handleCropMouseDown = (e: React.MouseEvent) => {
+    if (!cropMode) return;
+    e.preventDefault();
+    const pos = getCropPos(e);
+
+    if (cropRect && cropRect.w > 5 && cropRect.h > 5) {
+      const zone = getHitZone(pos, cropRect);
+      cropDragType.current = zone;
+      cropDragStart.current = { x: pos.x, y: pos.y, rect: { ...cropRect } };
+    } else {
+      cropDragType.current = 'create';
+      cropDragStart.current = { x: pos.x, y: pos.y, rect: { x: pos.x, y: pos.y, w: 0, h: 0 } };
+    }
+
+    isCropping.current = true;
+  };
+
+  // 裁剪鼠标移动
+  const handleCropMouseMove = (e: React.MouseEvent) => {
+    if (!cropMode) return;
+    const pos = getCropPos(e);
+
+    // 更新 cursor
+    const cropCanvas = cropCanvasRef.current;
+    if (cropCanvas) {
+      cropCanvas.style.cursor = isCropping.current ? '' : getCropCursor(pos);
+    }
+
+    if (!isCropping.current || !cropDragStart.current) return;
+
+    const canvasW = cropCanvas?.width ?? 800;
+    const canvasH = cropCanvas?.height ?? 560;
+    const { x: startX, y: startY, rect: startRect } = cropDragStart.current;
+    const dx = pos.x - startX;
+    const dy = pos.y - startY;
+
+    let newRect: { x: number; y: number; w: number; h: number };
+
+    switch (cropDragType.current) {
+      case 'create': {
+        const x = Math.max(0, Math.min(startX, pos.x));
+        const y = Math.max(0, Math.min(startY, pos.y));
+        const w = Math.min(Math.abs(pos.x - startX), canvasW - x);
+        const h = Math.min(Math.abs(pos.y - startY), canvasH - y);
+        newRect = { x, y, w, h };
+        break;
+      }
+      case 'move': {
+        let nx = startRect.x + dx;
+        let ny = startRect.y + dy;
+        // 限制不超出画布
+        nx = Math.max(0, Math.min(nx, canvasW - startRect.w));
+        ny = Math.max(0, Math.min(ny, canvasH - startRect.h));
+        newRect = { x: nx, y: ny, w: startRect.w, h: startRect.h };
+        break;
+      }
+      case 'n': {
+        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+        const newH = startRect.h - (newY - startRect.y);
+        newRect = { x: startRect.x, y: newY, w: startRect.w, h: newH };
+        break;
+      }
+      case 's': {
+        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+        newRect = { x: startRect.x, y: startRect.y, w: startRect.w, h: newH };
+        break;
+      }
+      case 'w': {
+        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+        const newW = startRect.w - (newX - startRect.x);
+        newRect = { x: newX, y: startRect.y, w: newW, h: startRect.h };
+        break;
+      }
+      case 'e': {
+        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+        newRect = { x: startRect.x, y: startRect.y, w: newW, h: startRect.h };
+        break;
+      }
+      case 'nw': {
+        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+        const newW = startRect.w - (newX - startRect.x);
+        const newH = startRect.h - (newY - startRect.y);
+        newRect = { x: newX, y: newY, w: newW, h: newH };
+        break;
+      }
+      case 'ne': {
+        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+        const newH = startRect.h - (newY - startRect.y);
+        newRect = { x: startRect.x, y: newY, w: newW, h: newH };
+        break;
+      }
+      case 'sw': {
+        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+        const newW = startRect.w - (newX - startRect.x);
+        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+        newRect = { x: newX, y: startRect.y, w: newW, h: newH };
+        break;
+      }
+      case 'se': {
+        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+        newRect = { x: startRect.x, y: startRect.y, w: newW, h: newH };
+        break;
+      }
+      default:
+        return;
+    }
+
+    setCropRect(newRect);
+    drawCropOverlay(newRect);
+  };
+
+  // 裁剪鼠标松开
+  const handleCropMouseUp = () => {
+    isCropping.current = false;
+    cropDragStart.current = null;
+  };
+
+  // 确认裁剪：截取选区部分作为新图片
+  const handleCropConfirm = () => {
+    if (!cropRect || cropRect.w < 5 || cropRect.h < 5) return;
+
+    // 合并 base + overlay，然后裁剪选区
+    const canvas = canvasRef.current;
+    const overlay = overlayRef.current;
+    const merged = document.createElement('canvas');
+    merged.width = canvas.width;
+    merged.height = canvas.height;
+    const mctx = merged.getContext('2d')!;
+    mctx.drawImage(canvas, 0, 0);
+    mctx.drawImage(overlay, 0, 0);
+
+    // 创建裁剪后的画布
+    const croppedCanvas = document.createElement('canvas');
+    croppedCanvas.width = Math.round(cropRect.w);
+    croppedCanvas.height = Math.round(cropRect.h);
+    const cctx = croppedCanvas.getContext('2d')!;
+    cctx.drawImage(
+      merged,
+      Math.round(cropRect.x), Math.round(cropRect.y),
+      Math.round(cropRect.w), Math.round(cropRect.h),
+      0, 0,
+      Math.round(cropRect.w), Math.round(cropRect.h)
+    );
+
+    // 直接保存裁剪结果
+    onSave(croppedCanvas.toDataURL('image/png'));
+  };
+
+  // 进入裁剪模式时绘制初始遮罩
+  useEffect(() => {
+    if (cropMode) {
+      drawCropOverlay(null);
+    }
+  }, [cropMode, drawCropOverlay]);
+
   // ── 保存 ──
   const handleSave = () => {
     // 先提交未完成的文字
@@ -252,7 +557,7 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   };
 
   // overlay 的 cursor
-  const cursorStyle = tool === 'pen' ? 'crosshair' : 'text';
+  const cursorStyle = cropMode ? 'crosshair' : tool === 'pen' ? 'crosshair' : 'text';
 
   // pending text 输入框在 overlay 上的位置（需要转换回 CSS 像素）
   const overlayRect = overlayRef.current?.getBoundingClientRect();
@@ -275,16 +580,22 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
           {/* 工具切换 */}
           <div className="flex gap-1 bg-runway-black rounded-md p-0.5">
             <button
-              onClick={() => setTool('pen')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${tool === 'pen' ? 'bg-white text-black' : 'text-runway-slate hover:text-white'}`}
+              onClick={() => { setTool('pen'); exitCropMode(); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${tool === 'pen' && !cropMode ? 'bg-white text-black' : 'text-runway-slate hover:text-white'}`}
             >
               <Pen className="w-3.5 h-3.5" />画笔
             </button>
             <button
-              onClick={() => setTool('text')}
-              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${tool === 'text' ? 'bg-white text-black' : 'text-runway-slate hover:text-white'}`}
+              onClick={() => { setTool('text'); exitCropMode(); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${tool === 'text' && !cropMode ? 'bg-white text-black' : 'text-runway-slate hover:text-white'}`}
             >
               <Type className="w-3.5 h-3.5" />文字
+            </button>
+            <button
+              onClick={() => { setTool('crop'); enterCropMode(); }}
+              className={`flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors ${cropMode ? 'bg-white text-black' : 'text-runway-slate hover:text-white'}`}
+            >
+              <Crop className="w-3.5 h-3.5" />裁剪
             </button>
           </div>
 
@@ -386,17 +697,70 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
           <div style={{ transform: `rotate(${rotation}deg)`, transition: 'transform 0.2s ease', position: 'relative' }}>
             {/* 底层：原图 */}
             <canvas ref={canvasRef} className="absolute pointer-events-none" style={{ maxWidth: '100%', maxHeight: '100%' }} />
-            {/* 上层：绘制层 */}
+            {/* 中层：绘制层 */}
             <canvas
               ref={overlayRef}
-              style={{ cursor: cursorStyle, maxWidth: '100%', maxHeight: '100%', position: 'relative' }}
+              style={{ cursor: cropMode ? 'default' : cursorStyle, maxWidth: '100%', maxHeight: '100%', position: 'relative', pointerEvents: cropMode ? 'none' : 'auto' }}
               onMouseDown={handleMouseDown}
               onMouseMove={handleMouseMove}
               onMouseUp={handleMouseUp}
               onMouseLeave={handleMouseUp}
               onClick={handleCanvasClick}
             />
+            {/* 顶层：裁剪遮罩层（仅裁剪模式下可交互） */}
+            <canvas
+              ref={cropCanvasRef}
+              style={{
+                cursor: 'crosshair',
+                maxWidth: '100%',
+                maxHeight: '100%',
+                position: 'absolute',
+                top: 0,
+                left: 0,
+                pointerEvents: cropMode ? 'auto' : 'none',
+                display: cropMode ? 'block' : 'none',
+              }}
+              onMouseDown={handleCropMouseDown}
+              onMouseMove={handleCropMouseMove}
+              onMouseUp={handleCropMouseUp}
+              onMouseLeave={handleCropMouseUp}
+            />
           </div>
+
+          {/* 裁剪模式操作提示 */}
+          {cropMode && (
+            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-runway-surface/95 border border-runway-border rounded-lg px-4 py-2.5 shadow-xl backdrop-blur-sm">
+              {cropRect && cropRect.w > 5 && cropRect.h > 5 ? (
+                <>
+                  <span className="text-xs text-runway-slate">
+                    选区：{Math.round(cropRect.w)} × {Math.round(cropRect.h)} px
+                  </span>
+                  <button
+                    onClick={handleCropConfirm}
+                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-xs font-medium rounded-md hover:bg-runway-cloud transition-colors"
+                  >
+                    <Crop className="w-3.5 h-3.5" />确认裁剪并保存
+                  </button>
+                  <button
+                    onClick={exitCropMode}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
+                  >
+                    取消
+                  </button>
+                </>
+              ) : (
+                <>
+                  <span className="text-xs text-runway-slate">拖拽鼠标框选要保留的区域</span>
+                  <button
+                    onClick={exitCropMode}
+                    className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
+                  >
+                    取消裁剪
+                  </button>
+                </>
+              )}
+            </div>
+          )}
 
           {/* 文字输入框（浮动在 overlay 上） */}
           {pendingText && overlayRect && (

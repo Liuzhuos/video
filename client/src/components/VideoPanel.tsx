@@ -18,7 +18,7 @@ export default function VideoPanel({
   onVideoComplete,
   onVideoError,
 }: VideoPanelProps) {
-  const [generating, setGenerating] = useState(false);
+  const [_generating, setGenerating] = useState(false);
   const [taskId, setTaskId] = useState<string | null>(null);
   const [progress, setProgress] = useState('准备中...');
   const pollingRef = useRef<ReturnType<typeof setInterval> | null>(null);
