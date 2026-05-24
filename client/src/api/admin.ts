@@ -95,8 +95,33 @@ export async function toggleApiKey(id: number): Promise<boolean> {
   return data.enabled;
 }
 
+// 批量查询所有 Key 余额
+export interface BalanceResult {
+  success: boolean;
+  id?: number;
+  remainCoins?: string | null;
+  currentTaskCounts?: string | null;
+  remainMoney?: string | null;
+  currency?: string | null;
+  apiType?: string | null;
+  error?: string;
+}
+
+export async function queryAllBalances(): Promise<{ balances: Record<number, BalanceResult>; updatedAt: string }> {
+  const res = await authFetch('/api/admin/api-keys/balances');
+  if (!res.ok) throw new Error('批量查询余额失败');
+  return await res.json();
+}
+
 // 查询余额
-export async function queryBalance(id: number): Promise<{ balance: any; raw: any }> {
+export async function queryBalance(id: number): Promise<{
+  remainCoins: string | null;
+  currentTaskCounts: string | null;
+  remainMoney: string | null;
+  currency: string | null;
+  apiType: string | null;
+  raw: any;
+}> {
   const res = await authFetch(`/api/admin/api-keys/${id}/balance`, { method: 'POST' });
   if (!res.ok) {
     const err = await res.json();

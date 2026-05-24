@@ -1,4 +1,4 @@
-import { Router, Response, Request } from 'express';
+import { Router, Response } from 'express';
 import prisma from '../services/prisma';
 import { authMiddleware, adminOnly, AuthRequest } from '../middleware/auth';
 import { resetAllLoads } from '../services/apiKeyPool';
@@ -43,7 +43,6 @@ adminRouter.post('/api-keys', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    // 检查是否重复
     const existing = await prisma.apiKey.findFirst({
       where: { apiKey, provider: provider || 'runninghub' },
     });
@@ -87,10 +86,7 @@ adminRouter.put('/api-keys/:id', async (req: AuthRequest, res: Response) => {
     if (priority !== undefined) data.priority = priority;
     if (enabled !== undefined) data.enabled = enabled;
 
-    const key = await prisma.apiKey.update({
-      where: { id },
-      data,
-    });
+    const key = await prisma.apiKey.update({ where: { id }, data });
 
     res.json({
       key: {
@@ -116,6 +112,107 @@ adminRouter.delete('/api-keys/:id', async (req: AuthRequest, res: Response) => {
   }
 });
 
+// ⚠️ 固定路径路由必须在 /:id 参数路由之前注册，否则 Express 会把路径段当成 id
+
+// GET /api/admin/api-keys/stats - 获取 Key 池统计概览
+adminRouter.get('/api-keys/stats', async (_req: AuthRequest, res: Response) => {
+  try {
+    const keys = await prisma.apiKey.findMany({ where: { provider: 'runninghub' } });
+
+    const total = keys.length;
+    const enabled = keys.filter((k) => k.enabled).length;
+    const totalLoad = keys.reduce((sum, k) => sum + k.currentLoad, 0);
+    const totalCapacity = keys.filter((k) => k.enabled).reduce((sum, k) => sum + k.maxConcurrent, 0);
+    const totalUsed = keys.reduce((sum, k) => sum + k.totalUsed, 0);
+
+    res.json({
+      total,
+      enabled,
+      disabled: total - enabled,
+      totalLoad,
+      totalCapacity,
+      totalUsed,
+      utilization: totalCapacity > 0 ? Math.round((totalLoad / totalCapacity) * 100) : 0,
+    });
+  } catch (error: any) {
+    console.error('[Admin] getStats error:', error);
+    res.status(500).json({ error: 'Failed to get stats' });
+  }
+});
+
+// GET /api/admin/api-keys/balances - 批量查询所有 Key 余额（并发）
+adminRouter.get('/api-keys/balances', async (_req: AuthRequest, res: Response) => {
+  try {
+    const keys = await prisma.apiKey.findMany({
+      where: { provider: 'runninghub' },
+      orderBy: [{ priority: 'desc' }, { createdAt: 'asc' }],
+    });
+
+    const baseUrl = process.env.RUNNINGHUB_BASE_URL || 'https://www.runninghub.cn';
+
+    const results = await Promise.allSettled(
+      keys.map(async (key) => {
+        const response = await fetch(`${baseUrl}/uc/openapi/accountStatus`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Host': 'www.runninghub.cn',
+            'Authorization': `Bearer ${key.apiKey}`,
+          },
+          body: JSON.stringify({ apikey: key.apiKey }),
+        });
+
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+
+        const result: any = await response.json();
+        console.log(`[Admin] Key ${key.name} accountStatus:`, JSON.stringify(result));
+
+        if (result.code === 0) {
+          const data = result.data ?? {};
+          return {
+            id: key.id,
+            remainCoins: data.remainCoins ?? null,
+            currentTaskCounts: data.currentTaskCounts ?? null,
+            remainMoney: data.remainMoney ?? null,
+            currency: data.currency ?? null,
+            apiType: data.apiType ?? null,
+          };
+        } else {
+          throw new Error(result.msg || result.message || 'Query failed');
+        }
+      })
+    );
+
+    const balances: Record<number, any> = {};
+    results.forEach((result, index) => {
+      const key = keys[index];
+      if (result.status === 'fulfilled') {
+        balances[key.id] = { success: true, ...result.value };
+      } else {
+        balances[key.id] = { success: false, error: result.reason?.message || 'Failed' };
+      }
+    });
+
+    res.json({ balances, updatedAt: new Date().toISOString() });
+  } catch (error: any) {
+    console.error('[Admin] batchQueryBalances error:', error);
+    res.status(500).json({ error: 'Failed to query balances' });
+  }
+});
+
+// POST /api/admin/api-keys/reset-loads - 重置所有负载计数
+adminRouter.post('/api-keys/reset-loads', async (_req: AuthRequest, res: Response) => {
+  try {
+    await resetAllLoads('runninghub');
+    res.json({ success: true });
+  } catch (error: any) {
+    console.error('[Admin] resetLoads error:', error);
+    res.status(500).json({ error: 'Failed to reset loads' });
+  }
+});
+
 // POST /api/admin/api-keys/:id/toggle - 启用/禁用 API Key
 adminRouter.post('/api-keys/:id/toggle', async (req: AuthRequest, res: Response) => {
   try {
@@ -138,17 +235,6 @@ adminRouter.post('/api-keys/:id/toggle', async (req: AuthRequest, res: Response)
   }
 });
 
-// POST /api/admin/api-keys/reset-loads - 重置所有负载计数
-adminRouter.post('/api-keys/reset-loads', async (_req: AuthRequest, res: Response) => {
-  try {
-    await resetAllLoads('runninghub');
-    res.json({ success: true });
-  } catch (error: any) {
-    console.error('[Admin] resetLoads error:', error);
-    res.status(500).json({ error: 'Failed to reset loads' });
-  }
-});
-
 // POST /api/admin/api-keys/:id/balance - 查询单个 Key 的余额
 adminRouter.post('/api-keys/:id/balance', async (req: AuthRequest, res: Response) => {
   try {
@@ -161,13 +247,14 @@ adminRouter.post('/api-keys/:id/balance', async (req: AuthRequest, res: Response
 
     const baseUrl = process.env.RUNNINGHUB_BASE_URL || 'https://www.runninghub.cn';
 
-    // RunningHub 余额查询接口
-    const response = await fetch(`${baseUrl}/task/openapi/accountBalance`, {
+    const response = await fetch(`${baseUrl}/uc/openapi/accountStatus`, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
+        'Host': 'www.runninghub.cn',
+        'Authorization': `Bearer ${key.apiKey}`,
       },
-      body: JSON.stringify({ apiKey: key.apiKey }),
+      body: JSON.stringify({ apikey: key.apiKey }),
     });
 
     if (!response.ok) {
@@ -177,12 +264,17 @@ adminRouter.post('/api-keys/:id/balance', async (req: AuthRequest, res: Response
     }
 
     const result: any = await response.json();
-    console.log(`[Admin] Key ${key.name} balance:`, JSON.stringify(result));
+    console.log(`[Admin] Key ${key.name} accountStatus:`, JSON.stringify(result));
 
-    if (result.code === 0 || result.code === 200) {
+    if (result.code === 0) {
+      const data = result.data ?? {};
       res.json({
-        balance: result.data?.balance ?? result.data,
-        raw: result.data,
+        remainCoins: data.remainCoins ?? null,
+        currentTaskCounts: data.currentTaskCounts ?? null,
+        remainMoney: data.remainMoney ?? null,
+        currency: data.currency ?? null,
+        apiType: data.apiType ?? null,
+        raw: data,
       });
     } else {
       res.status(500).json({ error: result.msg || result.message || 'Balance query failed' });
@@ -190,33 +282,5 @@ adminRouter.post('/api-keys/:id/balance', async (req: AuthRequest, res: Response
   } catch (error: any) {
     console.error('[Admin] queryBalance error:', error);
     res.status(500).json({ error: 'Failed to query balance' });
-  }
-});
-
-// GET /api/admin/api-keys/stats - 获取 Key 池统计概览
-adminRouter.get('/api-keys/stats', async (_req: AuthRequest, res: Response) => {
-  try {
-    const keys = await prisma.apiKey.findMany({
-      where: { provider: 'runninghub' },
-    });
-
-    const total = keys.length;
-    const enabled = keys.filter((k) => k.enabled).length;
-    const totalLoad = keys.reduce((sum, k) => sum + k.currentLoad, 0);
-    const totalCapacity = keys.filter((k) => k.enabled).reduce((sum, k) => sum + k.maxConcurrent, 0);
-    const totalUsed = keys.reduce((sum, k) => sum + k.totalUsed, 0);
-
-    res.json({
-      total,
-      enabled,
-      disabled: total - enabled,
-      totalLoad,
-      totalCapacity,
-      totalUsed,
-      utilization: totalCapacity > 0 ? Math.round((totalLoad / totalCapacity) * 100) : 0,
-    });
-  } catch (error: any) {
-    console.error('[Admin] getStats error:', error);
-    res.status(500).json({ error: 'Failed to get stats' });
   }
 });
