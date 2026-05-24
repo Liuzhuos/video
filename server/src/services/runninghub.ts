@@ -74,22 +74,7 @@ export function getKeyIdByTaskId(taskId: string): number | undefined {
   return taskKeyMap.get(taskId);
 }
 
-/** @deprecated 保留兼容，内部不再使用 */
-function getApiKey(): string {
-  const key = process.env.RUNNINGHUB_API_KEY;
-  if (!key) {
-    throw new Error('RUNNINGHUB_API_KEY 未配置');
-  }
-  return key;
-}
 
-export interface TaskOutputItem {
-  fileUrl: string;
-  fileType: string;
-  taskCostTime?: string;
-  nodeId?: string;
-  consumeCoins?: string;
-}
 
 /** 各模型文生图廉价版端点 */
 const TEXT_TO_IMAGE_ENDPOINTS: Record<ImageModel, string> = {
@@ -162,115 +147,7 @@ export async function createTextToImageTask(
   }
 }
 
-/**
- * 查询任务状态
- */
-export async function checkTaskStatus(taskId: string, apiKeyOverride?: string): Promise<string> {
-  const apiKey = apiKeyOverride || getApiKey();
 
-  const response = await fetch(`${BASE_URL}/task/openapi/status`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ apiKey, taskId }),
-  });
-
-  const result: any = await response.json();
-  console.log('[RunningHub] 任务状态:', JSON.stringify(result));
-
-  const code = result.code;
-  if (code !== 0 && code !== 200) {
-    throw new Error(`查询状态失败: ${result.msg ?? result.message ?? JSON.stringify(result)}`);
-  }
-
-  return result.data?.taskStatus ?? result.data ?? result.taskStatus ?? 'UNKNOWN';
-}
-
-/**
- * 获取任务输出结果
- */
-export async function getTaskOutput(taskId: string, apiKeyOverride?: string): Promise<TaskOutputItem[]> {
-  const apiKey = apiKeyOverride || getApiKey();
-
-  const response = await fetch(`${BASE_URL}/task/openapi/outputs`, {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      'Authorization': `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({ apiKey, taskId }),
-  });
-
-  const result: any = await response.json();
-  console.log('[RunningHub] 任务输出:', JSON.stringify(result));
-
-  const code = result.code;
-  if (code !== 0 && code !== 200) {
-    throw new Error(`获取结果失败: ${result.msg ?? result.message ?? JSON.stringify(result)}`);
-  }
-
-  const outputs = Array.isArray(result.data) ? result.data : result.data?.outputs ?? [];
-  return outputs;
-}
-
-/**
- * 轮询等待任务完成并返回结果图片URL
- * @param keyId 如果提供，任务完成后自动释放 Key
- */
-export async function waitForTaskResult(
-  taskId: string,
-  maxWaitMs = 5 * 60 * 1000,
-  intervalMs = 3000,
-  keyId?: number | null
-): Promise<string> {
-  const startTime = Date.now();
-
-  try {
-    while (Date.now() - startTime < maxWaitMs) {
-      const status = await checkTaskStatus(taskId);
-
-      if (status === 'SUCCESS' || status === 'COMPLETED') {
-        const outputs = await getTaskOutput(taskId);
-        const imageOutput = outputs.find((o: any) =>
-          ['png', 'jpg', 'jpeg', 'webp'].includes(o.fileType)
-        );
-
-        if (keyId) await releaseKey(keyId);
-
-        if (imageOutput) {
-          return imageOutput.fileUrl;
-        }
-
-        if (outputs.length > 0) {
-          return outputs[0].fileUrl;
-        }
-
-        throw new Error('任务完成但没有输出结果');
-      }
-
-      if (status === 'FAILED' || status === 'ERROR') {
-        if (keyId) {
-          await recordKeyError(keyId, '任务执行失败');
-          await releaseKey(keyId);
-        }
-        throw new Error('RunningHub 任务执行失败');
-      }
-
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
-    }
-
-    if (keyId) await releaseKey(keyId);
-    throw new Error('任务超时（5分钟），请稍后重试');
-  } catch (error) {
-    // 确保异常时也释放
-    if (keyId) {
-      try { await releaseKey(keyId); } catch {}
-    }
-    throw error;
-  }
-}
 
 
 /**
@@ -336,7 +213,10 @@ export interface V2QueryResult {
 }
 
 export async function queryV2Task(taskId: string, apiKeyOverride?: string): Promise<V2QueryResult> {
-  const apiKey = apiKeyOverride || getApiKey();
+  const apiKey = apiKeyOverride ?? process.env.RUNNINGHUB_API_KEY;
+  if (!apiKey) {
+    throw new Error('无可用的 RunningHub API Key');
+  }
 
   const response = await fetch(`${BASE_URL}/openapi/v2/query`, {
     method: 'POST',
@@ -464,30 +344,7 @@ export async function waitForImageToImageResult(
   }
 }
 
-/**
- * @deprecated 请使用 createImageToImageTask 代替
- * 保留此函数以兼容旧代码
- */
-export async function createGptImage2Task(
-  imageUrls: string[],
-  prompt: string,
-  aspectRatio: string = '16:9',
-  resolution: '1k' | '2k' | '4k' = '1k',
-  _quality: 'low' | 'medium' | 'high' = 'medium'
-): Promise<{ taskId: string; keyId: number | null }> {
-  return createImageToImageTask(imageUrls, prompt, aspectRatio, resolution, 'g');
-}
 
-/**
- * @deprecated 请使用 waitForImageToImageResult 代替
- */
-export async function waitForGptImage2Result(
-  taskId: string,
-  maxWaitMs = 5 * 60 * 1000,
-  intervalMs = 3000
-): Promise<string> {
-  return waitForImageToImageResult(taskId, maxWaitMs, intervalMs);
-}
 
 /**
  * 调用全能视频G (reference-to-video) 生成视频
