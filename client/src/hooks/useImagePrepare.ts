@@ -164,19 +164,33 @@ export function useImagePrepare() {
         setError(null);
         try {
           const promises = prompts.map(async ({ prompt, desc }) => {
-            const response = await authFetch('/api/image/generate', {
+            // 1. 提交任务，立即拿到 taskId
+            const submitRes = await authFetch('/api/image/generate-async', {
               method: 'POST',
               body: JSON.stringify({ prompt, aspectRatio, resolution, model: t2iModel }),
             });
-            if (!response.ok) { const err = await response.json(); throw new Error(err.error || '文生图失败'); }
-            const result = await response.json();
-            const item = { url: result.url as string, label: desc, variantDesc: desc };
-            setImages((prev) =>
-              prev.map((img) =>
-                img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img
-              )
-            );
-            return item;
+            if (!submitRes.ok) { const err = await submitRes.json(); throw new Error(err.error || '文生图失败'); }
+            const { taskId } = await submitRes.json();
+
+            // 2. 轮询直到完成
+            const maxWait = 5 * 60 * 1000;
+            const start = Date.now();
+            while (Date.now() - start < maxWait) {
+              await new Promise((r) => setTimeout(r, 3000));
+              const pollRes = await authFetch(`/api/image/task/${taskId}`);
+              const status = await pollRes.json();
+              if (status.status === 'success' && status.url) {
+                const item = { url: status.url as string, label: desc, variantDesc: desc };
+                setImages((prev) =>
+                  prev.map((img) =>
+                    img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img
+                  )
+                );
+                return item;
+              }
+              if (status.status === 'failed') throw new Error('文生图任务失败');
+            }
+            throw new Error('文生图任务超时');
           });
           const settled = await Promise.allSettled(promises);
           const errors: string[] = [];
@@ -206,15 +220,30 @@ export function useImagePrepare() {
     ]);
     setError(null);
     try {
-      const response = await authFetch('/api/image/generate', {
+      // 1. 提交任务
+      const submitRes = await authFetch('/api/image/generate-async', {
         method: 'POST',
         body: JSON.stringify({ prompt: currentPrompt, aspectRatio, resolution, model: t2iModel }),
       });
-      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '文生图失败'); }
-      const result = await response.json();
-      setImages((prev) =>
-        prev.map((img) => (img.id === slotId ? { ...img, url: result.url, pending: false } : img))
-      );
+      if (!submitRes.ok) { const err = await submitRes.json(); throw new Error(err.error || '文生图失败'); }
+      const { taskId } = await submitRes.json();
+
+      // 2. 轮询直到完成
+      const maxWait = 5 * 60 * 1000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const pollRes = await authFetch(`/api/image/task/${taskId}`);
+        const status = await pollRes.json();
+        if (status.status === 'success' && status.url) {
+          setImages((prev) =>
+            prev.map((img) => (img.id === slotId ? { ...img, url: status.url, pending: false } : img))
+          );
+          return;
+        }
+        if (status.status === 'failed') throw new Error('文生图任务失败');
+      }
+      throw new Error('文生图任务超时');
     } catch (err: any) {
       setImages((prev) => prev.filter((img) => img.id !== slotId));
       setError(err.message);
@@ -242,19 +271,33 @@ export function useImagePrepare() {
         setError(null);
         try {
           const promises = prompts.map(async ({ prompt, desc }) => {
-            const response = await authFetch('/api/fission/image-to-image', {
+            // 1. 提交任务
+            const submitRes = await authFetch('/api/fission/image-to-image-async', {
               method: 'POST',
               body: JSON.stringify({ imageUrl: sourceUrl, prompt, aspectRatio, resolution, model: i2iModel }),
             });
-            if (!response.ok) { const err = await response.json(); throw new Error(err.error || '图生图失败'); }
-            const result = await response.json();
-            const item = { url: result.url as string, label: desc, variantDesc: desc };
-            setImages((prev) =>
-              prev.map((img) =>
-                img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img
-              )
-            );
-            return item;
+            if (!submitRes.ok) { const err = await submitRes.json(); throw new Error(err.error || '图生图失败'); }
+            const { taskId } = await submitRes.json();
+
+            // 2. 轮询直到完成
+            const maxWait = 5 * 60 * 1000;
+            const start = Date.now();
+            while (Date.now() - start < maxWait) {
+              await new Promise((r) => setTimeout(r, 3000));
+              const pollRes = await authFetch(`/api/fission/task/${taskId}`);
+              const status = await pollRes.json();
+              if (status.status === 'success' && status.url) {
+                const item = { url: status.url as string, label: desc, variantDesc: desc };
+                setImages((prev) =>
+                  prev.map((img) =>
+                    img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img
+                  )
+                );
+                return item;
+              }
+              if (status.status === 'failed') throw new Error('图生图任务失败');
+            }
+            throw new Error('图生图任务超时');
           });
           const settled = await Promise.allSettled(promises);
           const errors: string[] = [];
@@ -284,15 +327,30 @@ export function useImagePrepare() {
     ]);
     setError(null);
     try {
-      const response = await authFetch('/api/fission/image-to-image', {
+      // 1. 提交任务
+      const submitRes = await authFetch('/api/fission/image-to-image-async', {
         method: 'POST',
         body: JSON.stringify({ imageUrl: sourceUrl, prompt: currentPrompt, aspectRatio, resolution, model: i2iModel }),
       });
-      if (!response.ok) { const err = await response.json(); throw new Error(err.error || '图生图失败'); }
-      const result = await response.json();
-      setImages((prev) =>
-        prev.map((img) => (img.id === slotId ? { ...img, url: result.url, pending: false } : img))
-      );
+      if (!submitRes.ok) { const err = await submitRes.json(); throw new Error(err.error || '图生图失败'); }
+      const { taskId } = await submitRes.json();
+
+      // 2. 轮询直到完成
+      const maxWait = 5 * 60 * 1000;
+      const start = Date.now();
+      while (Date.now() - start < maxWait) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const pollRes = await authFetch(`/api/fission/task/${taskId}`);
+        const status = await pollRes.json();
+        if (status.status === 'success' && status.url) {
+          setImages((prev) =>
+            prev.map((img) => (img.id === slotId ? { ...img, url: status.url, pending: false } : img))
+          );
+          return;
+        }
+        if (status.status === 'failed') throw new Error('图生图任务失败');
+      }
+      throw new Error('图生图任务超时');
     } catch (err: any) {
       setImages((prev) => prev.filter((img) => img.id !== slotId));
       setError(err.message);

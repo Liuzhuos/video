@@ -1,7 +1,8 @@
 import { Router, Request, Response } from 'express';
 import multer from 'multer';
 import path from 'path';
-import { createTextToImageTask, waitForTextToImageResult, waitForTaskResult, registerTaskKey, type ImageModel } from '../services/runninghub';
+import { createTextToImageTask, waitForTextToImageResult, registerTaskKey, type ImageModel } from '../services/runninghub';
+import { releaseKey } from '../services/apiKeyPool';
 import { uploadBufferToOSS } from '../services/oss';
 import prisma from '../services/prisma';
 import { optionalAuth, AuthRequest } from '../middleware/auth';
@@ -122,16 +123,28 @@ imageRouter.post('/generate', async (req: AuthRequest, res: Response) => {
 // POST /api/image/generate-async - 异步文生图（立即返回taskId，前端轮询）
 imageRouter.post('/generate-async', async (req: Request, res: Response) => {
   try {
-    const { prompt, sceneId } = req.body;
+    const { prompt, sceneId, aspectRatio, resolution, model } = req.body;
 
     if (!prompt) {
       res.status(400).json({ error: '请提供图片生成提示词' });
       return;
     }
 
-    const { taskId, keyId } = await createTextToImageTask(prompt);
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+
+    const { taskId, keyId } = await createTextToImageTask(
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
+
     // 注册映射，供前端轮询时使用同一个 Key 查询
     registerTaskKey(taskId, keyId);
+
+    // 任务已提交给 RunningHub，立即释放 Key slot
+    // 轮询查询不需要占用 Key，Key 只在提交阶段使用
+    if (keyId) await releaseKey(keyId);
 
     res.json({
       taskId,
@@ -160,8 +173,7 @@ imageRouter.get('/task/:taskId', async (req: Request, res: Response) => {
     const result = await queryV2Task(taskId, apiKey);
 
     if (result.status === 'SUCCESS') {
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) await releaseKey(keyId);
+      // Key 已在提交时释放，无需再次释放
 
       const imageOutput = result.results?.find(
         (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
@@ -173,11 +185,7 @@ imageRouter.get('/task/:taskId', async (req: Request, res: Response) => {
         url: imageOutput?.url,
       });
     } else if (result.status === 'FAILED') {
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) {
-        await recordKeyError(keyId, result.errorMessage || '图片任务失败');
-        await releaseKey(keyId);
-      }
+      // Key 已在提交时释放，无需再次释放
       res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });

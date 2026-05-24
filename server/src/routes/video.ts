@@ -6,7 +6,7 @@ import {
   getApiKeyByTaskId,
   getKeyIdByTaskId,
 } from '../services/runninghub';
-import { releaseKey, recordKeyError } from '../services/apiKeyPool';
+import { releaseKey } from '../services/apiKeyPool';
 import prisma from '../services/prisma';
 import { optionalAuth, AuthRequest } from '../middleware/auth';
 
@@ -110,12 +110,15 @@ videoRouter.post('/generate-async', async (req: AuthRequest, res: Response) => {
       return;
     }
 
-    const { taskId } = await createReferenceToVideoTask(
+    const { taskId, keyId } = await createReferenceToVideoTask(
       validUrls,
       prompt,
       duration || '6',
       resolution || '720p'
     );
+
+    // 任务已提交，立即释放 Key slot
+    if (keyId) await releaseKey(keyId);
 
     // 缓存任务元数据，供轮询成功时保存到数据库
     asyncTaskMeta.set(taskId, {
@@ -146,11 +149,7 @@ videoRouter.get('/task/:taskId', async (req: AuthRequest, res: Response) => {
     const result = await queryV2Task(taskId, apiKey);
 
     if (result.status === 'SUCCESS') {
-      // 释放 Key
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) {
-        await releaseKey(keyId);
-      }
+      // Key 已在提交时释放，无需再次释放
 
       const videoOutput = result.results?.find(
         (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
@@ -189,12 +188,7 @@ videoRouter.get('/task/:taskId', async (req: AuthRequest, res: Response) => {
         url: videoUrl,
       });
     } else if (result.status === 'FAILED') {
-      // 释放 Key
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) {
-        await recordKeyError(keyId, result.errorMessage || '视频任务失败');
-        await releaseKey(keyId);
-      }
+      // Key 已在提交时释放，无需再次释放
       asyncTaskMeta.delete(taskId);
       res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {

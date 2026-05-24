@@ -11,8 +11,10 @@ import {
   queryV2Task,
   getApiKeyByTaskId,
   getKeyIdByTaskId,
+  registerTaskKey,
   type ImageModel,
 } from '../services/runninghub';
+import { releaseKey } from '../services/apiKeyPool';
 import { uploadBufferToOSS } from '../services/oss';
 import { trimVideoBuffer } from '../services/ffmpeg';
 import prisma from '../services/prisma';
@@ -226,6 +228,74 @@ fissionRouter.post('/image-to-image', async (req: AuthRequest, res: Response) =>
   }
 });
 
+// POST /api/fission/text-to-image-async - 异步文生图（立即返回taskId，前端轮询）
+fissionRouter.post('/text-to-image-async', async (req: AuthRequest, res: Response) => {
+  try {
+    const { prompt, aspectRatio, resolution, model } = req.body;
+
+    if (!prompt) {
+      res.status(400).json({ error: '请提供图片生成提示词' });
+      return;
+    }
+
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+    console.log(`[裂变-文生图-异步] model: ${imageModel}, prompt: ${prompt}`);
+
+    const { taskId, keyId } = await createTextToImageTask(
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
+
+    registerTaskKey(taskId, keyId);
+    // 任务已提交，立即释放 Key slot，轮询阶段不需要占用
+    if (keyId) await releaseKey(keyId);
+
+    res.json({ taskId, status: 'running' });
+  } catch (error: any) {
+    console.error('[裂变-文生图-异步] 错误:', error);
+    res.status(500).json({ error: error.message || '文生图失败' });
+  }
+});
+
+// POST /api/fission/image-to-image-async - 异步图生图（立即返回taskId，前端轮询）
+fissionRouter.post('/image-to-image-async', async (req: AuthRequest, res: Response) => {
+  try {
+    const { imageUrl, prompt, aspectRatio, resolution, model } = req.body;
+
+    if (!imageUrl || !prompt) {
+      res.status(400).json({ error: '请提供源图片URL和提示词' });
+      return;
+    }
+
+    if (!imageUrl.startsWith('http')) {
+      res.status(400).json({ error: '源图片必须是公网URL' });
+      return;
+    }
+
+    const imageModel: ImageModel = (['g', 'v2', 'pro'].includes(model) ? model : 'g') as ImageModel;
+    console.log(`[裂变-图生图-异步] model: ${imageModel}, imageUrl: ${imageUrl}, prompt: ${prompt}`);
+
+    const { taskId, keyId } = await createImageToImageTask(
+      [imageUrl],
+      prompt,
+      aspectRatio || '16:9',
+      resolution || '1k',
+      imageModel
+    );
+
+    registerTaskKey(taskId, keyId);
+    // 任务已提交，立即释放 Key slot，轮询阶段不需要占用
+    if (keyId) await releaseKey(keyId);
+
+    res.json({ taskId, status: 'running' });
+  } catch (error: any) {
+    console.error('[裂变-图生图-异步] 错误:', error);
+    res.status(500).json({ error: error.message || '图生图失败' });
+  }
+});
+
 // POST /api/fission/generate-video - 生成裂变视频
 fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
   try {
@@ -252,12 +322,15 @@ fissionRouter.post('/generate-video', async (req: Request, res: Response) => {
 
     console.log(`[裂变-视频生成] imageUrl: ${validImageUrl}, prompt: ${prompt}, refVideo: ${referenceVideoUrl || '无'}`);
 
-    const { taskId } = await createReferenceToVideoTask(
+    const { taskId, keyId } = await createReferenceToVideoTask(
       imageUrls,
       prompt,
       duration || '6',
       resolution || '720p'
     );
+
+    // 任务已提交，立即释放 Key slot
+    if (keyId) await releaseKey(keyId);
 
     res.json({
       taskId,
@@ -278,31 +351,25 @@ fissionRouter.get('/task/:taskId', async (req: Request, res: Response) => {
     const result = await queryV2Task(taskId, apiKey);
 
     if (result.status === 'SUCCESS') {
-      // 任务完成，释放 Key
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) {
-        const { releaseKey } = await import('../services/apiKeyPool');
-        await releaseKey(keyId);
-      }
+      // 任务完成，Key 已在提交时释放，无需再次释放
 
-      const videoOutput = result.results?.find(
-        (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
-      ) ?? result.results?.find((r) => r.url);
+      // 优先匹配视频，其次图片，最后取第一个有 URL 的结果
+      const output =
+        result.results?.find(
+          (r) => r.url && r.outputType && ['mp4', 'mov', 'webm', 'avi'].includes(r.outputType.toLowerCase())
+        ) ??
+        result.results?.find(
+          (r) => r.url && r.outputType && ['png', 'jpg', 'jpeg', 'webp'].includes(r.outputType.toLowerCase())
+        ) ??
+        result.results?.find((r) => r.url);
 
       res.json({
         taskId,
         status: 'success',
-        url: videoOutput?.url,
+        url: output?.url,
       });
     } else if (result.status === 'FAILED') {
-      // 任务失败，释放 Key
-      const keyId = getKeyIdByTaskId(taskId);
-      if (keyId) {
-        const { releaseKey, recordKeyError } = await import('../services/apiKeyPool');
-        await recordKeyError(keyId, result.errorMessage || '任务失败');
-        await releaseKey(keyId);
-      }
-
+      // Key 已在提交时释放，无需再次释放
       res.json({ taskId, status: 'failed', error: result.errorMessage });
     } else {
       res.json({ taskId, status: 'running' });
@@ -378,7 +445,7 @@ fissionRouter.post('/seedance2', async (req: Request, res: Response) => {
 
     console.log(`[Seedance2] 垫图: ${validImageUrls.length}张, 参考视频: ${validVideoUrls.length}个, 音频: ${validAudioUrls.length}个`);
 
-    const { taskId } = await createSeedance2Task({
+    const { taskId, keyId } = await createSeedance2Task({
       prompt,
       resolution,
       duration,
@@ -389,6 +456,9 @@ fissionRouter.post('/seedance2', async (req: Request, res: Response) => {
       ratio: ratio || undefined,
       realPersonMode: realPersonMode !== undefined ? Boolean(realPersonMode) : undefined,
     });
+
+    // 任务已提交，立即释放 Key slot
+    if (keyId) await releaseKey(keyId);
 
     res.json({ taskId, status: 'running' });
   } catch (error: any) {

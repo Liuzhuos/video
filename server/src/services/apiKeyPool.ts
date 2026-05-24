@@ -18,31 +18,24 @@ export interface PooledKey {
 
 /**
  * 获取一个可用的 API Key（最少负载优先）
+ *
+ * 使用数据库事务 + 行锁（SELECT ... FOR UPDATE）保证原子性，
+ * 避免并发请求同时读到相同的 currentLoad 导致超出 maxConcurrent 上限。
+ *
  * @param provider 服务商标识，默认 "runninghub"
  * @returns PooledKey 或 null（无可用 Key）
  */
 export async function acquireKey(provider: string = 'runninghub'): Promise<PooledKey | null> {
-  // 查找启用的、未满载的 Key，按 (priority DESC, currentLoad ASC) 排序
-  const key = await prisma.apiKey.findFirst({
-    where: {
-      provider,
-      enabled: true,
-      currentLoad: { lt: prisma.apiKey.fields.maxConcurrent ? undefined : 999 },
-    },
-    orderBy: [
-      { priority: 'desc' },
-      { currentLoad: 'asc' },
-    ],
-  });
-
-  if (!key || key.currentLoad >= key.maxConcurrent) {
-    // 再做一次精确查询：找 currentLoad < maxConcurrent 的
-    const available = await prisma.$queryRaw<PooledKey[]>`
+  return prisma.$transaction(async (tx) => {
+    // SELECT ... FOR UPDATE：锁定符合条件的行，阻止其他并发事务同时修改
+    // 只取负载最低、优先级最高的一行
+    const available = await tx.$queryRaw<PooledKey[]>`
       SELECT id, api_key as apiKey, name, max_concurrent as maxConcurrent, current_load as currentLoad, priority
       FROM api_keys
       WHERE provider = ${provider} AND enabled = true AND current_load < max_concurrent
       ORDER BY priority DESC, current_load ASC
       LIMIT 1
+      FOR UPDATE
     `;
 
     if (available.length === 0) {
@@ -51,37 +44,17 @@ export async function acquireKey(provider: string = 'runninghub'): Promise<Poole
 
     const selected = available[0];
 
-    // 原子递增 currentLoad
-    await prisma.apiKey.update({
-      where: { id: selected.id },
-      data: {
-        currentLoad: { increment: 1 },
-        totalUsed: { increment: 1 },
-        lastUsedAt: new Date(),
-      },
-    });
+    // 在同一事务内递增，保证读到的值和写入的值一致
+    await tx.$executeRaw`
+      UPDATE api_keys
+      SET current_load = current_load + 1,
+          total_used   = total_used + 1,
+          last_used_at = NOW()
+      WHERE id = ${selected.id}
+    `;
 
     return { ...selected, currentLoad: selected.currentLoad + 1 };
-  }
-
-  // 原子递增 currentLoad
-  await prisma.apiKey.update({
-    where: { id: key.id },
-    data: {
-      currentLoad: { increment: 1 },
-      totalUsed: { increment: 1 },
-      lastUsedAt: new Date(),
-    },
   });
-
-  return {
-    id: key.id,
-    apiKey: key.apiKey,
-    name: key.name,
-    maxConcurrent: key.maxConcurrent,
-    currentLoad: key.currentLoad + 1,
-    priority: key.priority,
-  };
 }
 
 /**
