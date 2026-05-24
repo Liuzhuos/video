@@ -40,9 +40,9 @@ function App() {
       <Route path="/" element={<RequireAuth><Layout /></RequireAuth>}>
         <Route index element={<HomePage />} />
         <Route path="chat" element={<ChatPage />} />
-        <Route path="apps" element={<AppsPage />} />
-        {/* 具体应用页面带侧边栏 */}
+        {/* /apps 使用 AppLayout 作为父路由，index 显示应用中心 */}
         <Route path="apps" element={<AppLayout />}>
+          <Route index element={<AppsPage />} />
           <Route path="storyboard" element={<ProjectPage />} />
           <Route path="video-fission" element={<FissionPage />} />
         </Route>

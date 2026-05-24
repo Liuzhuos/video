@@ -18,7 +18,7 @@ import {
 import { uploadImage } from '../api/image';
 import { uploadVideo } from '../api/fission';
 import ImageEditorModal from '../components/ImageEditorModal';
-import PromptEditor, { type Asset } from '../components/PromptEditor';
+import PromptEditor, { type Asset, type CompareVariant } from '../components/PromptEditor';
 import ScriptModal, { type ScriptScene } from '../components/ScriptModal';
 import { polishPrompt } from '../api/chat';
 import { authFetch } from '../api/request';
@@ -34,6 +34,12 @@ interface PreparedImage {
   source: ImageSource;
   label: string;
   pending?: boolean;
+  /** 如果是对比组，存储组内所有图片 */
+  groupImages?: { url: string; label: string; variantDesc: string }[];
+  /** 标记为对比组 */
+  isGroup?: boolean;
+  /** 对比组中被选中用于视频生成的图片 URL 列表 */
+  selectedGroupUrls?: string[];
 }
 
 interface CapturedFrame {
@@ -484,6 +490,10 @@ export default function FissionPage() {
   const [textToImagePrompt, setTextToImagePrompt] = useState('');
   const [img2imgPrompt, setImg2imgPrompt] = useState('');
   const [aspectRatio, setAspectRatio] = useState('16:9');
+
+  // 对比变体状态
+  const [t2iCompareVariants, setT2iCompareVariants] = useState<CompareVariant[]>([]);
+  const [i2iCompareVariants, setI2iCompareVariants] = useState<CompareVariant[]>([]);
   const [resolution, setResolution] = useState<'1k' | '2k' | '4k'>('1k');
   const [t2iModel, setT2iModel] = useState<ImageModel>('g');
   const [i2iModel, setI2iModel] = useState<ImageModel>('g');
@@ -601,10 +611,95 @@ export default function FissionPage() {
     }
   };
 
+  // ── 生成对比变体的所有提示词组合 ──
+  const generateVariantPrompts = (basePrompt: string, variants: CompareVariant[]): { prompt: string; desc: string }[] => {
+    if (variants.length === 0) return [{ prompt: basePrompt, desc: '' }];
+
+    // 生成所有组合
+    let combinations: { prompt: string; desc: string }[] = [{ prompt: basePrompt, desc: '' }];
+
+    for (const v of variants) {
+      const newCombinations: { prompt: string; desc: string }[] = [];
+      for (const combo of combinations) {
+        for (const variantWord of v.variants) {
+          const newPrompt = combo.prompt.replace(v.original, variantWord);
+          const newDesc = combo.desc ? `${combo.desc}, ${variantWord}` : variantWord;
+          newCombinations.push({ prompt: newPrompt, desc: newDesc });
+        }
+      }
+      combinations = newCombinations;
+    }
+
+    return combinations;
+  };
+
   // ── 文生图 ──
   const handleTextToImage = async () => {
     if (!textToImagePrompt.trim()) return;
     const currentPrompt = textToImagePrompt.trim();
+
+    // 检查是否有对比变体
+    if (t2iCompareVariants.length > 0) {
+      const prompts = generateVariantPrompts(currentPrompt, t2iCompareVariants);
+      if (prompts.length > 1) {
+        // 并发对比生成：所有请求同时发出，后端 key 池自动排队
+        const groupId = `t2i_group_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        setImages((prev) => [...prev, {
+          id: groupId,
+          url: '',
+          source: 'text2img',
+          label: `对比: ${currentPrompt.slice(0, 15)}...`,
+          pending: true,
+          isGroup: true,
+          groupImages: [],
+        }]);
+        setError(null);
+
+        try {
+          // 并发发起所有请求，每完成一张立即更新
+          const promises = prompts.map(async ({ prompt, desc }) => {
+            const response = await authFetch('/api/image/generate', {
+              method: 'POST',
+              body: JSON.stringify({ prompt, aspectRatio, resolution, model: t2iModel }),
+            });
+            if (!response.ok) { const err = await response.json(); throw new Error(err.error || '文生图失败'); }
+            const result = await response.json();
+            const item = { url: result.url as string, label: desc, variantDesc: desc };
+            // 每完成一张立即追加到 groupImages
+            setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img));
+            return item;
+          });
+
+          const settled = await Promise.allSettled(promises);
+          const errors: string[] = [];
+          let hasSuccess = false;
+
+          settled.forEach((r, idx) => {
+            if (r.status === 'fulfilled') {
+              hasSuccess = true;
+            } else {
+              errors.push(`变体"${prompts[idx].desc}"失败: ${r.reason?.message || '未知错误'}`);
+            }
+          });
+
+          if (hasSuccess) {
+            setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, pending: false } : img));
+          } else {
+            setImages((prev) => prev.filter((img) => img.id !== groupId));
+          }
+
+          if (errors.length > 0) {
+            setError(errors.join('；'));
+          }
+        } catch (err: any) {
+          setImages((prev) => prev.filter((img) => img.id !== groupId));
+          setError(err.message);
+        }
+        return;
+      }
+    }
+
+    // 普通单张生成
     const slotId = `t2i_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     setImages((prev) => [...prev, { id: slotId, url: '', source: 'text2img', label: currentPrompt.slice(0, 20) + '...', pending: true }]);
     setError(null);
@@ -628,6 +723,68 @@ export default function FissionPage() {
     const sourceUrl = img2imgSources[0].url;
     if (!sourceUrl.startsWith('http')) { setError('源图片必须是公网URL，请使用AI生图或上传后重试'); return; }
     const currentPrompt = img2imgPrompt.trim();
+
+    // 检查是否有对比变体
+    if (i2iCompareVariants.length > 0) {
+      const prompts = generateVariantPrompts(currentPrompt, i2iCompareVariants);
+      if (prompts.length > 1) {
+        // 并发对比生成
+        const groupId = `i2i_group_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        setImages((prev) => [...prev, {
+          id: groupId,
+          url: '',
+          source: 'img2img',
+          label: `对比: ${currentPrompt.slice(0, 15)}...`,
+          pending: true,
+          isGroup: true,
+          groupImages: [],
+        }]);
+        setError(null);
+
+        try {
+          const promises = prompts.map(async ({ prompt, desc }) => {
+            const response = await authFetch('/api/fission/image-to-image', {
+              method: 'POST',
+              body: JSON.stringify({ imageUrl: sourceUrl, prompt, aspectRatio, resolution, model: i2iModel }),
+            });
+            if (!response.ok) { const err = await response.json(); throw new Error(err.error || '图生图失败'); }
+            const result = await response.json();
+            const item = { url: result.url as string, label: desc, variantDesc: desc };
+            // 每完成一张立即追加到 groupImages
+            setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, groupImages: [...(img.groupImages ?? []), item] } : img));
+            return item;
+          });
+
+          const settled = await Promise.allSettled(promises);
+          const errors: string[] = [];
+          let hasSuccess = false;
+
+          settled.forEach((r, idx) => {
+            if (r.status === 'fulfilled') {
+              hasSuccess = true;
+            } else {
+              errors.push(`变体"${prompts[idx].desc}"失败: ${r.reason?.message || '未知错误'}`);
+            }
+          });
+
+          if (hasSuccess) {
+            setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, pending: false } : img));
+          } else {
+            setImages((prev) => prev.filter((img) => img.id !== groupId));
+          }
+
+          if (errors.length > 0) {
+            setError(errors.join('；'));
+          }
+        } catch (err: any) {
+          setImages((prev) => prev.filter((img) => img.id !== groupId));
+          setError(err.message);
+        }
+        return;
+      }
+    }
+
+    // 普通单张生成
     const slotId = `i2i_${Date.now()}_${Math.random().toString(36).slice(2)}`;
     setImages((prev) => [...prev, { id: slotId, url: '', source: 'img2img', label: `图生图: ${currentPrompt.slice(0, 15)}...`, pending: true }]);
     setError(null);
@@ -759,7 +916,20 @@ export default function FissionPage() {
   // ── 生成视频（Seedance 2.0）──
   const handleGenerateVideo = async () => {
     const selectedImages = images.filter((img) => selectedPadIds.includes(img.id) && !img.pending);
-    const validImageUrls = selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'));
+    // 收集图片 URL：普通选中图片 + 对比组中预览选中的图片（无需选中对比组卡片）
+    const validImageUrls: string[] = [];
+    // 1. 普通选中的图片
+    selectedImages.forEach((img) => {
+      if (!img.isGroup && img.url.startsWith('http')) {
+        validImageUrls.push(img.url);
+      }
+    });
+    // 2. 所有对比组中预览选中的图片（不需要对比组本身被选中）
+    images.forEach((img) => {
+      if (img.isGroup && img.selectedGroupUrls && img.selectedGroupUrls.length > 0) {
+        img.selectedGroupUrls.filter((u) => u.startsWith('http')).forEach((u) => validImageUrls.push(u));
+      }
+    });
     const validVideoUrls = refVideoUrl ? [refVideoUrl] : [];
 
     if (validImageUrls.length === 0 && validVideoUrls.length === 0) {
@@ -891,6 +1061,13 @@ export default function FissionPage() {
             onAddToImg2imgSource={(url, label) => setImg2imgSources((prev) => [...prev, { url, label }])}
             onEditImg2imgSource={(index, url, label, originalUrl) => setEditingImage({ type: 'img2img-source', index, url, originalUrl, label })}
             onEditPadImage={(id, url, label, originalUrl) => setEditingImage({ type: 'pad-image', id, url, originalUrl, label })}
+            onUpdateGroupSelectedUrls={(groupId, urls) => {
+              setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, selectedGroupUrls: urls } : img));
+            }}
+            t2iCompareVariants={t2iCompareVariants}
+            onT2iCompareVariantsChange={setT2iCompareVariants}
+            i2iCompareVariants={i2iCompareVariants}
+            onI2iCompareVariantsChange={setI2iCompareVariants}
             onNext={() => setStep('generate')}
           />
         </div>
@@ -933,6 +1110,9 @@ export default function FissionPage() {
             onOpenVideoTrimModal={() => setShowVideoTrimModal(true)}
             onClearRefVideo={() => { setRefVideoLocalUrl(null); setRefVideoUrl(null); }}
             onEditPadImage={(id, url, label, originalUrl) => setEditingImage({ type: 'pad-image', id, url, originalUrl, label })}
+            onUpdateGroupSelectedUrls={(groupId, urls) => {
+              setImages((prev) => prev.map((img) => img.id === groupId ? { ...img, selectedGroupUrls: urls } : img));
+            }}
             onGenerate={handleGenerateVideo}
             onBack={() => setStep('prepare')}
           />
@@ -964,6 +1144,227 @@ export default function FissionPage() {
   );
 }
 
+// ==================== 对比组卡片（文件夹形式）====================
+function ImageGroupCard({
+  img,
+  isSelected,
+  isDisabled,
+  onToggleSelect,
+  onRemove,
+  onUpdateSelectedUrls,
+}: {
+  img: PreparedImage;
+  isSelected: boolean;
+  isDisabled: boolean;
+  onToggleSelect: () => void;
+  onRemove: () => void;
+  onUpdateSelectedUrls: (urls: string[]) => void;
+}) {
+  const [showPreview, setShowPreview] = useState(false);
+  const groupImages = img.groupImages ?? [];
+  const displayImages = groupImages.slice(0, 9); // 缩略图最多展示9张
+  const selectedUrls = img.selectedGroupUrls ?? [];
+
+  // 扇形角度：根据数量动态计算，总展开角度最大60°
+  const computeFanAngles = (count: number): number[] => {
+    if (count === 0) return [];
+    if (count === 1) return [0];
+    const maxSpread = Math.min(60, count * 10); // 总展开角度
+    const step = maxSpread / (count - 1);
+    const startAngle = -maxSpread / 2;
+    return Array.from({ length: count }, (_, i) => startAngle + step * i);
+  };
+
+  const fanAngles = computeFanAngles(displayImages.length);
+
+  return (
+    <>
+      <div
+        className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${isSelected ? 'border-amber-400 shadow-lg shadow-amber-500/20' : 'border-runway-border hover:border-amber-500/50'} group`}
+      >
+        {/* 扇形展开缩略图 - 点击打开预览 */}
+        <div
+          className="relative w-full aspect-video bg-runway-deep flex items-center justify-center"
+          onClick={() => groupImages.length > 0 ? setShowPreview(true) : undefined}
+        >
+          {displayImages.length > 0 ? (
+            <div className="relative w-[50%] h-[65%]">
+              {displayImages.map((gImg, idx) => (
+                <div
+                  key={idx}
+                  className="absolute inset-0 rounded-sm overflow-hidden border border-white/20 shadow-md bg-black"
+                  style={{
+                    transform: `rotate(${fanAngles[idx]}deg)`,
+                    transformOrigin: 'bottom center',
+                    zIndex: idx,
+                  }}
+                >
+                  <img
+                    src={gImg.url.startsWith('http') ? gImg.url : `http://localhost:3001${gImg.url}`}
+                    alt=""
+                    className="w-full h-full object-cover"
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center">
+              <Loader2 className="w-5 h-5 text-amber-400 animate-spin" />
+            </div>
+          )}
+        </div>
+
+        {/* 对比组标记 */}
+        <div className="absolute top-2 right-8 px-1.5 py-0.5 bg-amber-500/80 rounded text-xs font-bold text-black">
+          {groupImages.length}张
+        </div>
+
+        {/* 已选中数量标记 */}
+        {selectedUrls.length > 0 && (
+          <div className="absolute top-2 left-8 px-1.5 py-0.5 bg-white/90 rounded text-xs font-bold text-black">
+            选{selectedUrls.length}
+          </div>
+        )}
+
+        {/* 选中角标（点击切换选中） */}
+        <div
+          onClick={(e) => { e.stopPropagation(); onToggleSelect(); }}
+          className={`absolute top-2 left-2 w-5 h-5 rounded-full flex items-center justify-center transition-colors ${isSelected ? 'bg-amber-400' : 'bg-black/50 hover:bg-black/70 border border-white/30'}`}
+        >
+          {isSelected && <Check className="w-3 h-3 text-black" />}
+        </div>
+
+        {/* 禁用遮罩 */}
+        {isDisabled && (
+          <div className="absolute inset-0 bg-black/50 pointer-events-none" />
+        )}
+
+        {/* 删除按钮 */}
+        <button onClick={(e) => { e.stopPropagation(); onRemove(); }} className="absolute top-2 right-2 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center hover:bg-black/80 opacity-0 group-hover:opacity-100 transition-opacity">
+          <X className="w-3 h-3 text-white" />
+        </button>
+
+        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-r from-amber-900/80 to-black/60 px-2 py-1">
+          <span className="text-xs text-amber-200 truncate block">
+            {img.pending ? `生成中 (${groupImages.length}张完成)...` : img.label}
+          </span>
+        </div>
+      </div>
+
+      {/* 对比预览弹窗 */}
+      {showPreview && (
+        <ImageGroupPreviewModal
+          images={groupImages}
+          title={img.label}
+          isPending={img.pending}
+          initialSelectedUrls={selectedUrls}
+          onClose={() => setShowPreview(false)}
+          onConfirm={(urls) => {
+            onUpdateSelectedUrls(urls);
+            setShowPreview(false);
+          }}
+        />
+      )}
+    </>
+  );
+}
+
+// ==================== 对比组预览弹窗 ====================
+function ImageGroupPreviewModal({
+  images,
+  title,
+  isPending,
+  initialSelectedUrls,
+  onClose,
+  onConfirm,
+}: {
+  images: { url: string; label: string; variantDesc: string }[];
+  title: string;
+  isPending?: boolean;
+  initialSelectedUrls: string[];
+  onClose: () => void;
+  onConfirm: (selectedUrls: string[]) => void;
+}) {
+  const [selectedUrls, setSelectedUrls] = useState<Set<string>>(new Set(initialSelectedUrls));
+
+  const toggleSelect = (url: string) => {
+    setSelectedUrls((prev) => {
+      const next = new Set(prev);
+      if (next.has(url)) {
+        next.delete(url);
+      } else {
+        next.add(url);
+      }
+      return next;
+    });
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-runway-surface border border-runway-border rounded-xl w-[800px] max-w-[95vw] max-h-[90vh] flex flex-col shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-runway-border flex-shrink-0">
+          <div className="flex items-center gap-2">
+            <ImageIcon className="w-4 h-4 text-amber-400" />
+            <span className="text-sm font-semibold text-white">{title}</span>
+            <span className="text-xs text-runway-mid-slate">({images.length} 张对比{isPending ? '，生成中...' : ''})</span>
+          </div>
+          <button onClick={onClose} className="text-runway-slate hover:text-white transition-colors">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className={`grid gap-4 ${images.length <= 2 ? 'grid-cols-2' : 'grid-cols-3'}`}>
+            {images.map((img, idx) => (
+              <div key={idx} className="flex flex-col gap-2">
+                <div
+                  onClick={() => toggleSelect(img.url)}
+                  className={`relative rounded-lg overflow-hidden border-2 bg-black aspect-video cursor-pointer transition-all ${selectedUrls.has(img.url) ? 'border-white shadow-lg' : 'border-runway-border hover:border-runway-charcoal'}`}
+                >
+                  <img
+                    src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`}
+                    alt={img.label}
+                    className="w-full h-full object-contain"
+                  />
+                  {selectedUrls.has(img.url) && (
+                    <div className="absolute top-2 left-2 w-5 h-5 bg-white rounded-full flex items-center justify-center">
+                      <Check className="w-3 h-3 text-black" />
+                    </div>
+                  )}
+                </div>
+                <div className="text-center">
+                  <span className="text-xs text-amber-300 font-medium">{img.variantDesc || `变体 ${idx + 1}`}</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        {/* 底部操作栏 */}
+        <div className="flex items-center justify-between px-5 py-3 border-t border-runway-border flex-shrink-0">
+          <span className="text-xs text-runway-slate">
+            {selectedUrls.size > 0 ? `已选 ${selectedUrls.size} 张用于视频生成` : '点击图片选中，选中后直接用于视频生成'}
+          </span>
+          <div className="flex gap-2">
+            <button
+              onClick={onClose}
+              className="px-4 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
+            >
+              取消
+            </button>
+            <button
+              onClick={() => onConfirm(Array.from(selectedUrls))}
+              className="px-4 py-1.5 bg-white text-black text-xs font-medium rounded-md hover:bg-runway-cloud transition-colors"
+            >
+              确认选择 ({selectedUrls.size})
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ==================== 步骤1：准备垫图 ====================
 function PrepareStep({
   images, selectedPadIds, textToImagePrompt, img2imgPrompt, img2imgSources,
@@ -972,7 +1373,11 @@ function PrepareStep({
   onTogglePadSelect, onRemoveImage, onTextToImage, onImageUpload, onImageToImage,
   onRemoveSource, onTextToImagePromptChange, onImg2imgPromptChange,
   onAspectRatioChange, onResolutionChange, onT2iModelChange, onI2iModelChange,
-  onOpenCaptureModal, onAddToImg2imgSource, onEditImg2imgSource, onEditPadImage: _onEditPadImage, onNext,
+  onOpenCaptureModal, onAddToImg2imgSource, onEditImg2imgSource, onEditPadImage: _onEditPadImage,
+  onUpdateGroupSelectedUrls,
+  t2iCompareVariants, onT2iCompareVariantsChange,
+  i2iCompareVariants, onI2iCompareVariantsChange,
+  onNext,
 }: {
   images: PreparedImage[];
   selectedPadIds: string[];
@@ -1003,6 +1408,11 @@ function PrepareStep({
   onAddToImg2imgSource: (url: string, label: string) => void;
   onEditImg2imgSource: (index: number, url: string, label: string, originalUrl: string) => void;
   onEditPadImage: (id: string, url: string, label: string, originalUrl: string) => void;
+  onUpdateGroupSelectedUrls: (groupId: string, urls: string[]) => void;
+  t2iCompareVariants: CompareVariant[];
+  onT2iCompareVariantsChange: (v: CompareVariant[]) => void;
+  i2iCompareVariants: CompareVariant[];
+  onI2iCompareVariantsChange: (v: CompareVariant[]) => void;
   onNext: () => void;
 }) {
   const imageInputRef = useRef<HTMLInputElement>(null!);
@@ -1040,6 +1450,8 @@ function PrepareStep({
                 minHeight="9rem"
                 polishMode="image"
                 showPolishButton={true}
+                compareVariants={t2iCompareVariants}
+                onCompareVariantsChange={onT2iCompareVariantsChange}
               />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
@@ -1103,6 +1515,8 @@ function PrepareStep({
                 polishImageUrls={img2imgSources.map((s) => s.url).filter((u) => u.startsWith('http'))}
                 polishMode="image"
                 showPolishButton={true}
+                compareVariants={i2iCompareVariants}
+                onCompareVariantsChange={onI2iCompareVariantsChange}
               />
               <AspectRatioSelector value={aspectRatio} onChange={onAspectRatioChange} />
               <ResolutionSelector value={resolution} onChange={onResolutionChange} />
@@ -1131,12 +1545,12 @@ function PrepareStep({
           <div>
             <h3 className="text-base font-semibold text-white">准备垫图</h3>
             <p className="text-xs text-runway-slate mt-0.5">
-              已准备 {images.filter(i => !i.pending).length} 张，已选 {selectedPadIds.length}/9 张用于生成视频
+              已准备 {images.filter(i => !i.pending).length} 张，已选 {selectedPadIds.length + images.reduce((sum, img) => sum + (img.isGroup && img.selectedGroupUrls ? img.selectedGroupUrls.length : 0), 0)} 张用于生成视频
             </p>
           </div>
           <button
             onClick={onNext}
-            disabled={selectedPadIds.length === 0}
+            disabled={selectedPadIds.length === 0 && !images.some((img) => img.isGroup && img.selectedGroupUrls && img.selectedGroupUrls.length > 0)}
             className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
           >
             下一步：生成视频<ChevronRight className="w-4 h-4" />
@@ -1152,7 +1566,17 @@ function PrepareStep({
             </div>
           ) : (
             <div className="grid grid-cols-3 gap-3 content-start">
-              {images.map((img) => img.pending ? (
+              {images.map((img) => img.isGroup ? (
+                <ImageGroupCard
+                  key={img.id}
+                  img={img}
+                  isSelected={selectedPadIds.includes(img.id)}
+                  isDisabled={!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9}
+                  onToggleSelect={() => onTogglePadSelect(img.id)}
+                  onRemove={() => onRemoveImage(img.id)}
+                  onUpdateSelectedUrls={(urls) => onUpdateGroupSelectedUrls(img.id, urls)}
+                />
+              ) : img.pending ? (
                 <div key={img.id} className="relative rounded-lg overflow-hidden border-2 border-runway-border aspect-video">
                   <div className="absolute inset-0 bg-runway-surface shimmer-placeholder" />
                   <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
@@ -1219,7 +1643,7 @@ function GenerateStep({
   onVideoRatioChange, onGenerateAudioChange, onRealPersonModeChange,
   onUseRefVideoChange, onUseRefAudioChange,
   onRefVideoUpload, onRefAudioUpload, onOpenVideoTrimModal, onClearRefVideo,
-  onEditPadImage, onGenerate, onBack,
+  onEditPadImage, onUpdateGroupSelectedUrls, onGenerate, onBack,
 }: {
   images: PreparedImage[];
   selectedPadIds: string[];
@@ -1258,6 +1682,7 @@ function GenerateStep({
   onOpenVideoTrimModal: () => void;
   onClearRefVideo: () => void;
   onEditPadImage: (id: string, url: string, label: string, originalUrl: string) => void;
+  onUpdateGroupSelectedUrls: (groupId: string, urls: string[]) => void;
   onGenerate: () => void;
   onBack: () => void;
 }) {
@@ -1269,9 +1694,26 @@ function GenerateStep({
 
   const selectedImages = images.filter((img) => selectedPadIds.includes(img.id) && !img.pending);
 
+  // 对比组中预览选中的图片（展平为虚拟图片条目用于展示）
+  const groupSelectedImages: { url: string; label: string; groupId: string }[] = [];
+  images.forEach((img) => {
+    if (img.isGroup && img.selectedGroupUrls && img.selectedGroupUrls.length > 0 && img.groupImages) {
+      img.selectedGroupUrls.forEach((url) => {
+        const found = img.groupImages!.find((g) => g.url === url);
+        groupSelectedImages.push({ url, label: found?.variantDesc || '对比图', groupId: img.id });
+      });
+    }
+  });
+
+  // 合并所有用于展示的图片（普通选中 + 对比组预览选中）
+  const allDisplayImages = [
+    ...selectedImages.filter((img) => !img.isGroup).map((img) => ({ url: img.url, label: img.label, id: img.id, isFromGroup: false })),
+    ...groupSelectedImages.map((g, idx) => ({ url: g.url, label: g.label, id: `grp_${g.groupId}_${idx}`, isFromGroup: true })),
+  ];
+
   // 构建 @ 引用资源列表
   const promptAssets: Asset[] = [
-    ...selectedImages.map((img, i) => ({
+    ...allDisplayImages.map((img, i) => ({
       type: 'image' as const,
       label: `图片${i + 1}`,
       refTag: `@Image ${i + 1}`,
@@ -1293,7 +1735,7 @@ function GenerateStep({
 
   // AI 润色（视频模式）：结果分发到提示词 + 脚本
   const handleVideoPolish = async () => {
-    const imageUrls = selectedImages.map((img) => img.url).filter((u) => u.startsWith('http'));
+    const imageUrls = allDisplayImages.map((img) => img.url).filter((u) => u.startsWith('http'));
     const videoUrls = useRefVideo && refVideoUrl ? [refVideoUrl] : [];
     if (imageUrls.length === 0 && videoUrls.length === 0 && !videoPrompt.trim()) return;
 
@@ -1375,7 +1817,7 @@ function GenerateStep({
                   }
                 }}
               />
-              {selectedImages.length === 0 ? (
+              {allDisplayImages.length === 0 ? (
                 <button
                   onClick={() => localImageInputRef.current?.click()}
                   className="w-full border border-dashed border-runway-border rounded-md p-5 flex flex-col items-center justify-center gap-2 hover:border-runway-charcoal transition-colors"
@@ -1385,8 +1827,19 @@ function GenerateStep({
                 </button>
               ) : (
                 <div className="grid grid-cols-3 gap-1.5">
-                  {selectedImages.map((img, idx) => (
-                    <div key={img.id} className="relative rounded-md overflow-hidden border border-runway-border group aspect-square bg-black cursor-pointer" onClick={() => onEditPadImage(img.id, img.url, img.label, img.originalUrl ?? img.url)}>
+                  {allDisplayImages.map((img, idx) => (
+                    <div
+                      key={img.id}
+                      className="relative rounded-md overflow-hidden border border-runway-border group aspect-square bg-black cursor-pointer"
+                      onClick={() => {
+                        if (img.isFromGroup) {
+                          onEditPadImage(img.id, img.url, img.label, img.url);
+                        } else {
+                          const found = selectedImages.find((s) => s.id === img.id);
+                          if (found) onEditPadImage(found.id, found.url, found.label, found.originalUrl ?? found.url);
+                        }
+                      }}
+                    >
                       <img src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`} alt={img.label} className="w-full h-full object-cover" />
                       {/* 序号 */}
                       <div className="absolute top-0.5 left-0.5 w-4 h-4 bg-black/70 rounded-full flex items-center justify-center">
@@ -1398,7 +1851,19 @@ function GenerateStep({
                       </div>
                       {/* 移除按钮 */}
                       <button
-                        onClick={(e) => { e.stopPropagation(); onTogglePadSelect(img.id); }}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (img.isFromGroup) {
+                            // 对比组图片：从 selectedGroupUrls 中移除
+                            const group = images.find((g) => g.isGroup && g.selectedGroupUrls?.includes(img.url));
+                            if (group) {
+                              const newUrls = (group.selectedGroupUrls ?? []).filter((u) => u !== img.url);
+                              onUpdateGroupSelectedUrls(group.id, newUrls);
+                            }
+                          } else {
+                            onTogglePadSelect(img.id);
+                          }
+                        }}
                         className="absolute top-0.5 right-0.5 w-4 h-4 bg-black/70 rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80"
                       >
                         <X className="w-2.5 h-2.5 text-white" />
@@ -1443,7 +1908,7 @@ function GenerateStep({
                 <button
                   type="button"
                   onClick={handleVideoPolish}
-                  disabled={polishing || (selectedImages.length === 0 && !refVideoUrl && !videoPrompt.trim())}
+                  disabled={polishing || (allDisplayImages.length === 0 && !refVideoUrl && !videoPrompt.trim())}
                   className="flex items-center gap-1 px-2 py-1 rounded-md text-xs font-medium transition-all duration-200 bg-gradient-to-r from-purple-500/20 to-blue-500/20 border border-purple-500/30 text-purple-300 hover:from-purple-500/30 hover:to-blue-500/30 hover:border-purple-400/50 hover:text-purple-200 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   {polishing ? <Loader2 className="w-3 h-3 animate-spin" /> : <Wand2 className="w-3 h-3" />}

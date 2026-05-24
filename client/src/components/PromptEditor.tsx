@@ -3,9 +3,11 @@
  *
  * 内部用 contenteditable div，chip 作为 inline 不可编辑 span 插入。
  * 序列化时把 chip 转为 refTag 文本输出给父组件。
+ *
+ * 对比功能：选中文字右键 → "对比" → 输入变体关键词 → 生成时自动组合
  */
 import { useRef, useEffect, useCallback, useState } from 'react';
-import { Image as ImageIcon, Film, Music, Sparkles, Loader2 } from 'lucide-react';
+import { Image as ImageIcon, Film, Music, Sparkles, Loader2, GitCompare } from 'lucide-react';
 import { polishPrompt } from '../api/chat';
 
 export type AssetType = 'image' | 'video' | 'audio';
@@ -16,6 +18,15 @@ export interface Asset {
   /** RunningHub @-reference 格式，如 "@Image 1" */
   refTag: string;
   thumbnailUrl: string | null;
+}
+
+/** 对比变体定义 */
+export interface CompareVariant {
+  id: string;
+  /** 原始选中的文字 */
+  original: string;
+  /** 所有变体（含原始，最多3个） */
+  variants: string[];
 }
 
 const TYPE_COLOR: Record<AssetType, string> = {
@@ -49,6 +60,10 @@ interface PromptEditorProps {
   polishMode?: 'image' | 'video';
   /** 是否始终显示润色按钮（即使没有图片/视频，也可以纯文本润色） */
   showPolishButton?: boolean;
+  /** 对比变体列表 */
+  compareVariants?: CompareVariant[];
+  /** 对比变体变化回调 */
+  onCompareVariantsChange?: (variants: CompareVariant[]) => void;
 }
 
 // ── 序列化：把 contenteditable 内容转为纯文本 ──────────────
@@ -61,6 +76,9 @@ function serialize(el: HTMLElement): string {
       const ref = node.dataset.ref;
       if (ref) {
         text += ref;
+      } else if (node.dataset.compareId) {
+        // 对比 chip：序列化为原始文字
+        text += node.dataset.compareOriginal ?? node.textContent ?? '';
       } else if (node.tagName === 'BR') {
         text += '\n';
       } else {
@@ -108,7 +126,6 @@ function createChipEl(asset: Asset, onRemove: () => void): HTMLElement {
   } else {
     const iconWrap = document.createElement('span');
     iconWrap.style.cssText = `display:inline-flex;align-items:center;color:${color}`;
-    // 用 SVG 直接写，避免 React 渲染
     const svgMap: Record<AssetType, string> = {
       image: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></svg>`,
       video: `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="2" width="20" height="20" rx="2.18"/><line x1="7" y1="2" x2="7" y2="22"/><line x1="17" y1="2" x2="17" y2="22"/><line x1="2" y1="12" x2="22" y2="12"/><line x1="2" y1="7" x2="7" y2="7"/><line x1="2" y1="17" x2="7" y2="17"/><line x1="17" y1="17" x2="22" y2="17"/><line x1="17" y1="7" x2="22" y2="7"/></svg>`,
@@ -143,6 +160,204 @@ function createChipEl(asset: Asset, onRemove: () => void): HTMLElement {
   return span;
 }
 
+// ── 创建对比 chip DOM 元素 ────────────────────────────────
+function createCompareChipEl(
+  variant: CompareVariant,
+  onClick: () => void,
+  onRemove: () => void
+): HTMLElement {
+  const span = document.createElement('span');
+  span.contentEditable = 'false';
+  span.dataset.compareId = variant.id;
+  span.dataset.compareOriginal = variant.original;
+  span.dataset.chip = '1';
+  span.style.cssText = `
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: #f59e0b;
+    background: rgba(245,158,11,0.15);
+    border: 1px solid rgba(245,158,11,0.4);
+    user-select: none;
+    cursor: pointer;
+    vertical-align: baseline;
+    line-height: 1.5rem;
+    height: 1.5rem;
+    margin: 0 1px;
+  `;
+
+  // 对比图标
+  const iconWrap = document.createElement('span');
+  iconWrap.style.cssText = 'display:inline-flex;align-items:center;color:#f59e0b;';
+  iconWrap.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="18" r="3"/><circle cx="6" cy="6" r="3"/><path d="M13 6h3a2 2 0 0 1 2 2v7"/><path d="M11 18H8a2 2 0 0 1-2-2V9"/></svg>`;
+  span.appendChild(iconWrap);
+
+  // 显示文字：原始词 + 变体数
+  const label = document.createElement('span');
+  label.textContent = `${variant.original}`;
+  span.appendChild(label);
+
+  // 变体数量标记
+  const badge = document.createElement('span');
+  badge.style.cssText = `
+    display:inline-flex;align-items:center;justify-content:center;
+    min-width:14px;height:14px;border-radius:7px;
+    background:rgba(245,158,11,0.3);font-size:10px;
+    color:#f59e0b;padding:0 3px;margin-left:2px;
+  `;
+  badge.textContent = `×${variant.variants.length}`;
+  span.appendChild(badge);
+
+  // 点击编辑
+  span.addEventListener('click', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onClick();
+  });
+
+  // 删除按钮
+  const btn = document.createElement('button');
+  btn.type = 'button';
+  btn.textContent = '×';
+  btn.style.cssText = `
+    background:none;border:none;padding:0;margin-left:3px;
+    cursor:pointer;color:#f59e0b;opacity:0.7;font-size:14px;line-height:1;
+  `;
+  btn.addEventListener('mouseenter', () => { btn.style.opacity = '1'; });
+  btn.addEventListener('mouseleave', () => { btn.style.opacity = '0.7'; });
+  btn.addEventListener('mousedown', (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    onRemove();
+  });
+  span.appendChild(btn);
+
+  return span;
+}
+
+// ── 对比变体编辑弹窗 ──────────────────────────────────────
+function CompareVariantModal({
+  variant,
+  onSave,
+  onClose,
+}: {
+  variant: CompareVariant;
+  onSave: (updated: CompareVariant) => void;
+  onClose: () => void;
+}) {
+  const [variants, setVariants] = useState<string[]>([...variant.variants]);
+  const inputRefs = useRef<(HTMLInputElement | null)[]>([]);
+
+  const handleAdd = () => {
+    if (variants.length >= 3) return;
+    setVariants([...variants, '']);
+    setTimeout(() => {
+      inputRefs.current[variants.length]?.focus();
+    }, 50);
+  };
+
+  const handleRemove = (idx: number) => {
+    if (variants.length <= 1) return;
+    setVariants(variants.filter((_, i) => i !== idx));
+  };
+
+  const handleChange = (idx: number, val: string) => {
+    const next = [...variants];
+    next[idx] = val;
+    setVariants(next);
+  };
+
+  const handleSave = () => {
+    const filtered = variants.filter((v) => v.trim().length > 0);
+    if (filtered.length === 0) return;
+    onSave({ ...variant, variants: filtered });
+  };
+
+  return (
+    <div className="fixed inset-0 z-[10000] flex items-center justify-center bg-black/60 backdrop-blur-sm" onClick={onClose}>
+      <div className="bg-runway-surface border border-runway-border rounded-xl w-[380px] shadow-2xl" onClick={(e) => e.stopPropagation()}>
+        <div className="flex items-center justify-between px-5 py-4 border-b border-runway-border">
+          <div className="flex items-center gap-2">
+            <GitCompare className="w-4 h-4 text-amber-400" />
+            <span className="text-sm font-semibold text-white">编辑对比变体</span>
+          </div>
+          <button onClick={onClose} className="text-runway-slate hover:text-white transition-colors text-lg leading-none">×</button>
+        </div>
+
+        <div className="p-5 space-y-4">
+          <div>
+            <p className="text-xs text-runway-slate mb-1">原始关键词</p>
+            <div className="px-3 py-2 bg-runway-deep rounded-md text-sm text-amber-300 font-medium">
+              {variant.original}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <p className="text-xs text-runway-slate">变体关键词（含原始，最多3个）</p>
+              {variants.length < 3 && (
+                <button
+                  onClick={handleAdd}
+                  className="text-xs text-amber-400 hover:text-amber-300 transition-colors"
+                >
+                  + 添加变体
+                </button>
+              )}
+            </div>
+            <div className="space-y-2">
+              {variants.map((v, idx) => (
+                <div key={idx} className="flex items-center gap-2">
+                  <span className="text-xs text-runway-mid-slate w-4 text-center">{idx + 1}</span>
+                  <input
+                    ref={(el) => { inputRefs.current[idx] = el; }}
+                    type="text"
+                    value={v}
+                    onChange={(e) => handleChange(idx, e.target.value)}
+                    placeholder={idx === 0 ? variant.original : '输入变体关键词...'}
+                    className="flex-1 px-3 py-1.5 bg-runway-black border border-runway-border rounded-md text-sm text-white placeholder:text-runway-mid-slate focus:outline-none focus:border-amber-500/50"
+                  />
+                  {variants.length > 1 && (
+                    <button
+                      onClick={() => handleRemove(idx)}
+                      className="text-runway-mid-slate hover:text-red-400 transition-colors text-sm"
+                    >
+                      ×
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <p className="text-xs text-runway-mid-slate">
+            生成时将为每个变体分别生图，结果以文件夹形式展示。
+          </p>
+        </div>
+
+        <div className="flex gap-3 px-5 py-4 border-t border-runway-border">
+          <button
+            onClick={onClose}
+            className="px-4 py-2 border border-runway-border text-runway-slate text-sm rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
+          >
+            取消
+          </button>
+          <button
+            onClick={handleSave}
+            disabled={variants.filter((v) => v.trim()).length === 0}
+            className="flex-1 py-2 bg-amber-500 text-black text-sm font-medium rounded-md hover:bg-amber-400 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            确认
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function PromptEditor({
   value,
   onChange,
@@ -153,6 +368,8 @@ export default function PromptEditor({
   polishVideoUrls = [],
   polishMode = 'video',
   showPolishButton = false,
+  compareVariants = [],
+  onCompareVariantsChange,
 }: PromptEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -164,6 +381,15 @@ export default function PromptEditor({
   const isComposing = useRef(false);
   const suppressChange = useRef(false);
   const [polishing, setPolishing] = useState(false);
+
+  // 右键菜单状态
+  const [contextMenuOpen, setContextMenuOpen] = useState(false);
+  const [contextMenuPos, setContextMenuPos] = useState<{ top: number; left: number }>({ top: 0, left: 0 });
+  const [selectedText, setSelectedText] = useState('');
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // 对比变体编辑弹窗
+  const [editingVariant, setEditingVariant] = useState<CompareVariant | null>(null);
 
   // 外部清空时清除编辑器
   useEffect(() => {
@@ -178,7 +404,6 @@ export default function PromptEditor({
   const lastEmittedValue = useRef(value);
   useEffect(() => {
     if (value !== lastEmittedValue.current && editorRef.current) {
-      // value 是从外部设置的（不是由编辑器 emitChange 触发的）
       suppressChange.current = true;
       if (value) {
         editorRef.current.textContent = value;
@@ -242,20 +467,16 @@ export default function PromptEditor({
     if (!sel || sel.rangeCount === 0) return;
     const range = sel.getRangeAt(0);
 
-    // 删除 @ 及其后面的过滤词
-    // 找到光标所在文本节点，往前找 @
     let node = range.startContainer;
     let offset = range.startOffset;
     if (node.nodeType === Node.TEXT_NODE) {
       const text = node.textContent ?? '';
       const atIdx = text.lastIndexOf('@', offset - 1);
       if (atIdx !== -1) {
-        // 删除从 @ 到当前光标的内容
         const deleteRange = document.createRange();
         deleteRange.setStart(node, atIdx);
         deleteRange.setEnd(node, offset);
         deleteRange.deleteContents();
-        // 更新 range
         range.setStart(node, atIdx);
         range.collapse(true);
       }
@@ -264,7 +485,6 @@ export default function PromptEditor({
     const chipEl = createChipEl(asset, () => removeChip(chipEl));
     range.insertNode(chipEl);
 
-    // 光标移到 chip 后面
     range.setStartAfter(chipEl);
     range.collapse(true);
     sel.removeAllRanges();
@@ -280,6 +500,98 @@ export default function PromptEditor({
     a.label.toLowerCase().includes(menuFilter.toLowerCase()) ||
     a.refTag.toLowerCase().includes(menuFilter.toLowerCase())
   );
+
+  // ── 右键菜单：对比功能 ──
+  const handleContextMenu = (e: React.MouseEvent) => {
+    const sel = window.getSelection();
+    const text = sel?.toString().trim() ?? '';
+    if (!text) return; // 没有选中文字，使用默认右键菜单
+
+    // 检查是否已达到2个对比位置上限
+    if (compareVariants.length >= 2) return;
+
+    e.preventDefault();
+    setSelectedText(text);
+    setContextMenuPos({ top: e.clientY, left: e.clientX });
+    setContextMenuOpen(true);
+  };
+
+  // 点击"对比"选项
+  const handleCompareClick = () => {
+    setContextMenuOpen(false);
+    if (!selectedText || !onCompareVariantsChange) return;
+
+    const newVariant: CompareVariant = {
+      id: `cmp_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      original: selectedText,
+      variants: [selectedText],
+    };
+
+    // 在编辑器中将选中文字替换为对比 chip
+    const sel = window.getSelection();
+    if (sel && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const chipEl = createCompareChipEl(
+        newVariant,
+        () => setEditingVariant(newVariant),
+        () => {
+          // 移除对比 chip，恢复为原始文字
+          const textNode = document.createTextNode(newVariant.original);
+          chipEl.replaceWith(textNode);
+          onCompareVariantsChange(compareVariants.filter((v) => v.id !== newVariant.id));
+          emitChange();
+        }
+      );
+      range.insertNode(chipEl);
+      range.setStartAfter(chipEl);
+      range.collapse(true);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    }
+
+    // 打开编辑弹窗
+    setEditingVariant(newVariant);
+    onCompareVariantsChange([...compareVariants, newVariant]);
+    emitChange();
+  };
+
+  // 保存对比变体编辑
+  const handleVariantSave = (updated: CompareVariant) => {
+    if (!onCompareVariantsChange) return;
+    const newVariants = compareVariants.map((v) => v.id === updated.id ? updated : v);
+    onCompareVariantsChange(newVariants);
+    setEditingVariant(null);
+
+    // 更新编辑器中的 chip 显示
+    if (editorRef.current) {
+      const chip = editorRef.current.querySelector(`[data-compare-id="${updated.id}"]`);
+      if (chip) {
+        const newChip = createCompareChipEl(
+          updated,
+          () => setEditingVariant(updated),
+          () => {
+            const textNode = document.createTextNode(updated.original);
+            newChip.replaceWith(textNode);
+            onCompareVariantsChange(newVariants.filter((v) => v.id !== updated.id));
+            emitChange();
+          }
+        );
+        chip.replaceWith(newChip);
+      }
+    }
+  };
+
+  // 关闭右键菜单
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (contextMenuRef.current && !contextMenuRef.current.contains(e.target as Node)) {
+        setContextMenuOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
 
   const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
     if (isComposing.current) return;
@@ -297,7 +609,6 @@ export default function PromptEditor({
 
     if (e.key === '@') {
       saveRange();
-      // 计算光标在视口中的位置（用 fixed 定位菜单，不受父容器 overflow 影响）
       setTimeout(() => {
         const sel = window.getSelection();
         if (sel && sel.rangeCount > 0) {
@@ -307,23 +618,16 @@ export default function PromptEditor({
           if (editorRect) {
             let top = rect.bottom + 4;
             let left = rect.left;
-
-            // 如果 rect 是空的（第一个字符时），用编辑器左上角
             if (rect.width === 0 && rect.height === 0 && rect.top === 0) {
               top = editorRect.top + 24;
               left = editorRect.left;
             }
-
-            // 防止超出右边界（菜单宽度 240px）
             const maxLeft = window.innerWidth - 250;
             if (left > maxLeft) left = Math.max(0, maxLeft);
-
-            // 防止超出底部（菜单高度约 200px），改为向上弹
             if (top + 200 > window.innerHeight) {
               top = rect.top - 200 - 4;
               if (top < 0) top = rect.bottom + 4;
             }
-
             setMenuPos({ top, left });
           }
         }
@@ -359,7 +663,7 @@ export default function PromptEditor({
     }
   };
 
-  // 点击外部关闭菜单
+  // 点击外部关闭 @ 菜单
   useEffect(() => {
     const handler = (e: MouseEvent) => {
       if (
@@ -381,7 +685,6 @@ export default function PromptEditor({
     try {
       setPolishing(true);
       const result = await polishPrompt(polishImageUrls, polishVideoUrls, value, polishMode);
-      // 将润色结果写入编辑器
       onChange(result);
       if (editorRef.current) {
         suppressChange.current = true;
@@ -428,6 +731,7 @@ export default function PromptEditor({
         onCompositionEnd={() => { isComposing.current = false; setTimeout(emitChange, 0); }}
         onMouseUp={saveRange}
         onKeyUp={saveRange}
+        onContextMenu={handleContextMenu}
         onBlur={() => { setTimeout(() => setMenuOpen(false), 150); }}
         data-placeholder={placeholder}
         className="w-full bg-runway-black border border-runway-border rounded-md px-3 py-3 text-sm text-white focus:outline-none focus:border-runway-charcoal leading-6 break-words"
@@ -446,6 +750,23 @@ export default function PromptEditor({
           pointer-events: none;
         }
       `}</style>
+
+      {/* 右键菜单 */}
+      {contextMenuOpen && (
+        <div
+          ref={contextMenuRef}
+          className="fixed z-[9999] bg-runway-surface border border-runway-border rounded-lg shadow-xl overflow-hidden py-1"
+          style={{ top: `${contextMenuPos.top}px`, left: `${contextMenuPos.left}px` }}
+        >
+          <button
+            onMouseDown={(e) => { e.preventDefault(); handleCompareClick(); }}
+            className="w-full flex items-center gap-2 px-4 py-2 text-xs text-amber-300 hover:bg-runway-deep transition-colors"
+          >
+            <GitCompare className="w-3.5 h-3.5" />
+            <span>对比「{selectedText.length > 8 ? selectedText.slice(0, 8) + '...' : selectedText}」</span>
+          </button>
+        </div>
+      )}
 
       {/* @ 候选菜单（跟随光标位置） */}
       {menuOpen && (
@@ -484,6 +805,15 @@ export default function PromptEditor({
             })
           )}
         </div>
+      )}
+
+      {/* 对比变体编辑弹窗 */}
+      {editingVariant && (
+        <CompareVariantModal
+          variant={editingVariant}
+          onSave={handleVariantSave}
+          onClose={() => setEditingVariant(null)}
+        />
       )}
     </div>
   );

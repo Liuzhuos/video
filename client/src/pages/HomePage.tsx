@@ -1,57 +1,8 @@
-import { Flame, TrendingUp, Newspaper, ExternalLink } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { Flame, TrendingUp, Newspaper, ExternalLink, RefreshCw, Loader2 } from 'lucide-react';
+import { fetchAINews, NewsItem } from '../api/news';
 
-// 模拟AI热点新闻数据
-const hotNews = [
-  {
-    id: 1,
-    title: 'OpenAI 发布 GPT-5，多模态能力大幅提升',
-    summary: '新模型在推理、代码生成和视觉理解方面取得突破性进展，支持更长上下文窗口。',
-    source: 'AI Daily',
-    time: '2小时前',
-    hot: true,
-  },
-  {
-    id: 2,
-    title: 'Sora 开放 API，视频生成进入新时代',
-    summary: '开发者现在可以通过 API 调用 Sora 模型，生成高质量视频内容。',
-    source: 'TechCrunch',
-    time: '4小时前',
-    hot: true,
-  },
-  {
-    id: 3,
-    title: 'Google DeepMind 推出新一代蛋白质结构预测模型',
-    summary: 'AlphaFold 3 能够预测几乎所有生物分子的结构，加速药物研发。',
-    source: 'Nature',
-    time: '6小时前',
-    hot: false,
-  },
-  {
-    id: 4,
-    title: '国内大模型竞争白热化，多家厂商发布新版本',
-    summary: '百度、阿里、字节等公司相继更新旗下大模型，性能对标国际顶尖水平。',
-    source: '36氪',
-    time: '8小时前',
-    hot: false,
-  },
-  {
-    id: 5,
-    title: 'Stable Diffusion 4.0 发布，图像生成质量再创新高',
-    summary: '新版本在人物一致性、文字渲染和细节表现方面有显著提升。',
-    source: 'Stability AI',
-    time: '12小时前',
-    hot: false,
-  },
-  {
-    id: 6,
-    title: 'AI 编程助手市场报告：开发者采用率突破 70%',
-    summary: '调查显示超过七成开发者在日常工作中使用 AI 编程工具，效率提升明显。',
-    source: 'GitHub Blog',
-    time: '1天前',
-    hot: false,
-  },
-];
-
+// 热门话题（静态展示，后续可接入动态数据）
 const trendingTopics = [
   { name: 'AI Agent', heat: 9823 },
   { name: '多模态大模型', heat: 8456 },
@@ -61,12 +12,56 @@ const trendingTopics = [
 ];
 
 export default function HomePage() {
+  const [news, setNews] = useState<NewsItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [lastUpdate, setLastUpdate] = useState<Date | null>(null);
+
+  const loadNews = async () => {
+    try {
+      setLoading(true);
+      setError('');
+      const data = await fetchAINews();
+      setNews(data);
+      setLastUpdate(new Date());
+    } catch (err: any) {
+      setError(err.message || '获取新闻失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    loadNews();
+
+    // 每10分钟自动刷新
+    const interval = setInterval(loadNews, 10 * 60 * 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   return (
     <div className="max-w-6xl mx-auto px-6 py-8">
       {/* 页面标题 */}
-      <div className="mb-8">
-        <h2 className="text-2xl font-semibold text-white mb-2">AI 热点</h2>
-        <p className="text-runway-slate text-sm">关注 AI 领域最新动态与趋势</p>
+      <div className="mb-8 flex items-center justify-between">
+        <div>
+          <h2 className="text-2xl font-semibold text-white mb-2">AI 热点</h2>
+          <p className="text-runway-slate text-sm">关注 AI 领域最新动态与趋势</p>
+        </div>
+        <div className="flex items-center gap-3">
+          {lastUpdate && (
+            <span className="text-xs text-runway-mid-slate">
+              更新于 {lastUpdate.toLocaleTimeString('zh-CN')}
+            </span>
+          )}
+          <button
+            onClick={loadNews}
+            disabled={loading}
+            className="flex items-center gap-1.5 text-xs text-runway-slate hover:text-white bg-runway-surface border border-runway-border rounded-md px-3 py-1.5 transition-colors disabled:opacity-50"
+          >
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            刷新
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
@@ -77,33 +72,53 @@ export default function HomePage() {
             <span className="text-sm font-medium text-runway-slate">最新资讯</span>
           </div>
 
-          {hotNews.map((news) => (
-            <article
-              key={news.id}
-              className="bg-runway-surface border border-runway-border rounded-lg p-5 hover:border-runway-charcoal transition-colors cursor-pointer group"
-            >
-              <div className="flex items-start justify-between gap-4">
-                <div className="flex-1">
-                  <div className="flex items-center gap-2 mb-2">
-                    {news.hot && (
-                      <span className="inline-flex items-center gap-1 text-xs text-orange-400 bg-orange-400/10 px-2 py-0.5 rounded">
-                        <Flame className="w-3 h-3" />
-                        热门
-                      </span>
+          {loading && news.length === 0 ? (
+            <div className="flex items-center justify-center py-20">
+              <Loader2 className="w-6 h-6 text-runway-slate animate-spin" />
+              <span className="ml-2 text-runway-slate text-sm">加载中...</span>
+            </div>
+          ) : error && news.length === 0 ? (
+            <div className="text-center py-20">
+              <p className="text-runway-slate text-sm mb-3">{error}</p>
+              <button
+                onClick={loadNews}
+                className="text-xs text-blue-400 hover:text-blue-300 transition-colors"
+              >
+                点击重试
+              </button>
+            </div>
+          ) : (
+            news.map((item, index) => (
+              <article
+                key={item.id}
+                className="bg-runway-surface border border-runway-border rounded-lg p-5 hover:border-runway-charcoal transition-colors cursor-pointer group"
+                onClick={() => item.link && window.open(item.link, '_blank')}
+              >
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex-1">
+                    <div className="flex items-center gap-2 mb-2">
+                      {index < 3 && (
+                        <span className="inline-flex items-center gap-1 text-xs text-orange-400 bg-orange-400/10 px-2 py-0.5 rounded">
+                          <Flame className="w-3 h-3" />
+                          热门
+                        </span>
+                      )}
+                      <span className="text-xs text-runway-mid-slate">{item.source}</span>
+                      <span className="text-xs text-runway-mid-slate">·</span>
+                      <span className="text-xs text-runway-mid-slate">{item.timeAgo}</span>
+                    </div>
+                    <h3 className="text-white font-medium mb-2 group-hover:text-blue-400 transition-colors">
+                      {item.title}
+                    </h3>
+                    {item.summary && (
+                      <p className="text-sm text-runway-slate leading-relaxed">{item.summary}</p>
                     )}
-                    <span className="text-xs text-runway-mid-slate">{news.source}</span>
-                    <span className="text-xs text-runway-mid-slate">·</span>
-                    <span className="text-xs text-runway-mid-slate">{news.time}</span>
                   </div>
-                  <h3 className="text-white font-medium mb-2 group-hover:text-blue-400 transition-colors">
-                    {news.title}
-                  </h3>
-                  <p className="text-sm text-runway-slate leading-relaxed">{news.summary}</p>
+                  <ExternalLink className="w-4 h-4 text-runway-mid-slate opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1" />
                 </div>
-                <ExternalLink className="w-4 h-4 text-runway-mid-slate opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0 mt-1" />
-              </div>
-            </article>
-          ))}
+              </article>
+            ))
+          )}
         </div>
 
         {/* 右侧：热门话题 */}

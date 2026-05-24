@@ -9,6 +9,7 @@ import { fissionRouter } from './routes/fission';
 import { authRouter } from './routes/auth';
 import { mediaRouter } from './routes/media';
 import { adminRouter } from './routes/admin';
+import { newsRouter } from './routes/news';
 import { resetAllLoads } from './services/apiKeyPool';
 
 dotenv.config();
@@ -28,6 +29,7 @@ app.use('/api/video', videoRouter);
 app.use('/api/fission', fissionRouter);
 app.use('/api/media', mediaRouter);
 app.use('/api/admin', adminRouter);
+app.use('/api/news', newsRouter);
 
 // 健康检查
 app.get('/api/health', (_req, res) => {
