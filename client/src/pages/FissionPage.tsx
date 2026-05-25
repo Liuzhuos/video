@@ -16,7 +16,7 @@ type EditingImage =
   | { type: 'pad-image'; id: string; url: string; originalUrl: string; label: string };
 
 export default function FissionPage() {
-  const [step, setStep] = useState<FissionStep>('prepare');
+  const [step, setStep] = useState<FissionStep>('generate');
   const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [showVideoTrimModal, setShowVideoTrimModal] = useState(false);
   const [editingImage, setEditingImage] = useState<EditingImage | null>(null);
@@ -52,44 +52,26 @@ export default function FissionPage() {
 
   return (
     <div className="h-full flex flex-col overflow-hidden bg-runway-black">
-      {/* 步骤指示器 */}
-      <div className="flex items-center gap-3 px-6 py-3 border-b border-runway-border flex-shrink-0">
+      {/* Tab 切换 */}
+      <div className="flex items-center gap-1 px-6 py-3 border-b border-runway-border flex-shrink-0">
         <button
           onClick={() => setStep('prepare')}
-          className={`flex items-center gap-2 text-sm font-medium transition-colors ${
-            step === 'prepare' ? 'text-white' : 'text-runway-slate hover:text-white'
+          className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+            step === 'prepare'
+              ? 'bg-white text-black'
+              : 'text-runway-slate hover:text-white hover:bg-runway-charcoal'
           }`}
         >
-          <span
-            className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
-              step === 'prepare' ? 'bg-white text-black' : 'bg-runway-charcoal text-runway-slate'
-            }`}
-          >
-            1
-          </span>
           准备垫图
         </button>
-        <span className="text-runway-mid-slate text-xs">›</span>
         <button
-          onClick={() => {
-            const hasSelected =
-              imagePrepare.selectedPadIds.length > 0 ||
-              imagePrepare.images.some(
-                (img) => img.isGroup && img.selectedGroupUrls && img.selectedGroupUrls.length > 0
-              );
-            if (hasSelected) setStep('generate');
-          }}
-          className={`flex items-center gap-2 text-sm font-medium transition-colors ${
-            step === 'generate' ? 'text-white' : 'text-runway-slate hover:text-white'
+          onClick={() => setStep('generate')}
+          className={`px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+            step === 'generate'
+              ? 'bg-white text-black'
+              : 'text-runway-slate hover:text-white hover:bg-runway-charcoal'
           }`}
         >
-          <span
-            className={`w-5 h-5 rounded-full flex items-center justify-center text-xs font-bold ${
-              step === 'generate' ? 'bg-white text-black' : 'bg-runway-charcoal text-runway-slate'
-            }`}
-          >
-            2
-          </span>
           生成视频
         </button>
       </div>

@@ -149,7 +149,7 @@ export default function GenerateStep({
               <div className="flex items-center justify-between mb-2">
                 <p className="text-xs text-runway-slate">垫图（已选 {selectedPadIds.length}/9）</p>
                 <button onClick={onBack} className="text-xs text-runway-slate hover:text-white transition-colors">
-                  ← 返回添加
+                  去准备垫图
                 </button>
               </div>
               <div className="border border-runway-border rounded-md p-2 bg-runway-black">
@@ -438,7 +438,7 @@ export default function GenerateStep({
               <Film className="w-10 h-10 text-runway-mid-slate mb-3" />
               <p className="text-sm text-runway-mid-slate">配置左侧参数后点击生成视频</p>
               {selectedPadIds.length === 0 && (
-                <p className="text-xs text-runway-mid-slate mt-1">请先在上一步选择垫图</p>
+                <p className="text-xs text-runway-mid-slate mt-1">请先添加垫图</p>
               )}
             </div>
           )}

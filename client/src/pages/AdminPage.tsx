@@ -3,6 +3,7 @@ import {
   getApiKeys,
   getApiKeyStats,
   addApiKey,
+  updateApiKey,
   deleteApiKey,
   toggleApiKey,
   queryAllBalances,
@@ -26,6 +27,9 @@ import {
   Zap,
   TrendingUp,
   Shield,
+  Pencil,
+  Save,
+  X,
 } from 'lucide-react';
 
 const AUTO_REFRESH_INTERVAL = 10 * 60 * 1000; // 10 分钟
@@ -49,6 +53,15 @@ export default function AdminPage() {
   const [formMaxConcurrent, setFormMaxConcurrent] = useState(5);
   const [formPriority, setFormPriority] = useState(0);
   const [formError, setFormError] = useState('');
+
+  // 编辑状态
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [editName, setEditName] = useState('');
+  const [editKey, setEditKey] = useState('');
+  const [editMaxConcurrent, setEditMaxConcurrent] = useState(5);
+  const [editPriority, setEditPriority] = useState(0);
+  const [editError, setEditError] = useState('');
+  const [editSaving, setEditSaving] = useState(false);
 
   const loadData = useCallback(async () => {
     try {
@@ -168,6 +181,49 @@ export default function AdminPage() {
       await loadData();
     } catch (err: any) {
       alert(err.message);
+    }
+  };
+
+  const handleStartEdit = (key: ApiKeyItem) => {
+    setEditingId(key.id);
+    setEditName(key.name);
+    setEditKey(''); // API Key 是脱敏的，留空表示不修改
+    setEditMaxConcurrent(key.maxConcurrent);
+    setEditPriority(key.priority);
+    setEditError('');
+  };
+
+  const handleCancelEdit = () => {
+    setEditingId(null);
+    setEditError('');
+  };
+
+  const handleSaveEdit = async (id: number) => {
+    if (!editName.trim()) {
+      setEditError('名称不能为空');
+      return;
+    }
+    try {
+      setEditSaving(true);
+      setEditError('');
+      const params: any = {
+        name: editName.trim(),
+        maxConcurrent: editMaxConcurrent,
+        priority: editPriority,
+      };
+      // 只有填写了新 Key 才更新
+      if (editKey.trim()) {
+        params.apiKey = editKey.trim();
+      }
+      await updateApiKey(id, params);
+      setEditingId(null);
+      await loadData();
+      // 保存成功后自动拉取余额
+      await handleManualRefreshBalance(id);
+    } catch (err: any) {
+      setEditError(err.message);
+    } finally {
+      setEditSaving(false);
     }
   };
 
@@ -460,6 +516,13 @@ export default function AdminPage() {
                     {/* 右侧操作按钮 */}
                     <div className="flex flex-col gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
                       <button
+                        onClick={() => handleStartEdit(key)}
+                        className="p-1.5 rounded-lg text-runway-slate hover:text-emerald-400 hover:bg-emerald-900/20 transition-all"
+                        title="编辑"
+                      >
+                        <Pencil className="w-3.5 h-3.5" />
+                      </button>
+                      <button
                         onClick={() => handleManualRefreshBalance(key.id)}
                         className="p-1.5 rounded-lg text-runway-slate hover:text-blue-400 hover:bg-blue-900/20 transition-all"
                         title="刷新余额"
@@ -485,6 +548,74 @@ export default function AdminPage() {
                       </button>
                     </div>
                   </div>
+
+                  {/* 编辑表单 */}
+                  {editingId === key.id && (
+                    <div className="mt-3 pt-3 border-t border-runway-border space-y-3">
+                      {editError && (
+                        <div className="flex items-center gap-2 px-3 py-2 bg-red-900/20 border border-red-500/30 rounded-lg text-xs text-red-400">
+                          <AlertCircle className="w-3.5 h-3.5 flex-shrink-0" />
+                          {editError}
+                        </div>
+                      )}
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="space-y-1">
+                          <label className="text-xs text-runway-slate">备注名称</label>
+                          <input
+                            type="text"
+                            value={editName}
+                            onChange={(e) => setEditName(e.target.value)}
+                            className="w-full px-3 py-2 bg-runway-black border border-runway-border rounded-lg text-sm text-white placeholder-runway-mid-slate focus:outline-none focus:border-blue-500 transition-colors"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-runway-slate">API Key <span className="opacity-50">（留空则不修改）</span></label>
+                          <input
+                            type="text"
+                            placeholder="输入新 Key 以替换"
+                            value={editKey}
+                            onChange={(e) => setEditKey(e.target.value)}
+                            className="w-full px-3 py-2 bg-runway-black border border-runway-border rounded-lg text-sm text-white placeholder-runway-mid-slate focus:outline-none focus:border-blue-500 transition-colors font-mono"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-runway-slate">并发上限</label>
+                          <input
+                            type="number"
+                            value={editMaxConcurrent}
+                            onChange={(e) => setEditMaxConcurrent(parseInt(e.target.value) || 1)}
+                            className="w-full px-3 py-2 bg-runway-black border border-runway-border rounded-lg text-sm text-white placeholder-runway-mid-slate focus:outline-none focus:border-blue-500 transition-colors"
+                          />
+                        </div>
+                        <div className="space-y-1">
+                          <label className="text-xs text-runway-slate">优先级（越大越优先）</label>
+                          <input
+                            type="number"
+                            value={editPriority}
+                            onChange={(e) => setEditPriority(parseInt(e.target.value) || 0)}
+                            className="w-full px-3 py-2 bg-runway-black border border-runway-border rounded-lg text-sm text-white placeholder-runway-mid-slate focus:outline-none focus:border-blue-500 transition-colors"
+                          />
+                        </div>
+                      </div>
+                      <div className="flex gap-2 pt-1">
+                        <button
+                          onClick={() => handleSaveEdit(key.id)}
+                          disabled={editSaving}
+                          className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-500 text-white rounded-lg transition-all shadow-md shadow-blue-900/30 disabled:opacity-50"
+                        >
+                          <Save className="w-3.5 h-3.5" />
+                          {editSaving ? '保存中...' : '保存并刷新余额'}
+                        </button>
+                        <button
+                          onClick={handleCancelEdit}
+                          className="flex items-center gap-1.5 px-4 py-1.5 text-sm bg-runway-black text-runway-slate hover:text-white rounded-lg border border-runway-border transition-all"
+                        >
+                          <X className="w-3.5 h-3.5" />
+                          取消
+                        </button>
+                      </div>
+                    </div>
+                  )}
                 </div>
               );
             })

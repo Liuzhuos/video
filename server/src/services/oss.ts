@@ -21,20 +21,31 @@ const ENDPOINT = () => process.env.OSS_ENDPOINT || 'oss-cn-hangzhou.aliyuncs.com
 const BUCKET = () => process.env.OSS_BUCKET!;
 
 /**
- * 上传 Buffer 到 OSS，返回公网可访问的 URL
+ * 生成签名 URL（私有 Bucket 使用）
+ * @param ossKey OSS 对象 key
+ * @param expires 过期时间（秒），默认 1 小时
+ */
+export function getSignedUrl(ossKey: string, expires: number = 3600): string {
+  return getClient().signatureUrl(ossKey, { expires });
+}
+
+/**
+ * 上传 Buffer 到 OSS，返回可访问的 URL
+ * 私有 Bucket 返回签名 URL，公共读 Bucket 返回直接 URL
  */
 export async function uploadBufferToOSS(buffer: Buffer, filename: string): Promise<string> {
   const ossKey = `${PREFIX()}${filename}`;
   await getClient().put(ossKey, buffer);
-  return `https://${BUCKET()}.${ENDPOINT()}/${ossKey}`;
+  // 使用签名 URL，兼容私有 Bucket
+  return getSignedUrl(ossKey);
 }
 
 /**
- * 上传本地文件到 OSS，返回公网可访问的 URL
+ * 上传本地文件到 OSS，返回可访问的 URL
  */
 export async function uploadFileToOSS(localFilePath: string): Promise<string> {
   const filename = path.basename(localFilePath);
   const ossKey = `${PREFIX()}${filename}`;
   await getClient().put(ossKey, localFilePath);
-  return `https://${BUCKET()}.${ENDPOINT()}/${ossKey}`;
+  return getSignedUrl(ossKey);
 }

@@ -247,13 +247,9 @@ export default function PrepareStep({
           </div>
           <button
             onClick={onNext}
-            disabled={
-              selectedPadIds.length === 0 &&
-              !images.some((img) => img.isGroup && img.selectedGroupUrls && img.selectedGroupUrls.length > 0)
-            }
-            className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors disabled:opacity-50 disabled:cursor-not-allowed flex items-center gap-2"
+            className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors flex items-center gap-2"
           >
-            下一步：生成视频<ChevronRight className="w-4 h-4" />
+            返回生成视频<ChevronRight className="w-4 h-4" />
           </button>
         </div>
 
