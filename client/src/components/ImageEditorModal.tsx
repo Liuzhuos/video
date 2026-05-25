@@ -3,6 +3,21 @@ import { X, Pen, Type, ImageIcon, RotateCcw, RotateCw, Save, Minus, Plus, Crop }
 
 type Tool = 'pen' | 'text' | 'crop';
 
+// 预设裁剪比例
+const CROP_PRESETS: { label: string; ratio: number | null }[] = [
+  { label: '自由', ratio: null },
+  { label: '1:1', ratio: 1 },
+  { label: '16:9', ratio: 16 / 9 },
+  { label: '9:16', ratio: 9 / 16 },
+  { label: '4:3', ratio: 4 / 3 },
+  { label: '3:4', ratio: 3 / 4 },
+  { label: '3:2', ratio: 3 / 2 },
+  { label: '2:3', ratio: 2 / 3 },
+  { label: '5:4', ratio: 5 / 4 },
+  { label: '4:5', ratio: 4 / 5 },
+  { label: '21:9', ratio: 21 / 9 },
+];
+
 const COLORS = [
   '#ffffff', '#000000', '#ef4444', '#f97316', '#eab308',
   '#22c55e', '#3b82f6', '#a855f7', '#ec4899', '#06b6d4',
@@ -39,8 +54,12 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   // 裁剪相关状态
   const [cropMode, setCropMode] = useState(false);
   const [cropRect, setCropRect] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [cropAspectRatio, setCropAspectRatio] = useState<number | null>(null); // null = 自由裁剪
   const isCropping = useRef(false);
   const cropCanvasRef = useRef<HTMLCanvasElement>(null!); // 裁剪遮罩层
+
+  // 保存原图的实际尺寸（用于裁剪时按原图分辨率输出）
+  const originalImageSize = useRef<{ w: number; h: number }>({ w: 0, h: 0 });
 
   const isDrawing = useRef(false);
   const lastPos = useRef<{ x: number; y: number } | null>(null);
@@ -67,6 +86,9 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
     const img = new Image();
     img.crossOrigin = 'anonymous';
     img.onload = () => {
+      // 记录原图实际尺寸
+      originalImageSize.current = { w: img.naturalWidth, h: img.naturalHeight };
+
       const maxW = 800;
       const maxH = 560;
       let w = img.naturalWidth;
@@ -98,6 +120,9 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
       // CORS 失败时不带 crossOrigin 重试（仅用于显示，保存时走 fetch）
       const img2 = new Image();
       img2.onload = () => {
+        // 记录原图实际尺寸
+        originalImageSize.current = { w: img2.naturalWidth, h: img2.naturalHeight };
+
         const maxW = 800;
         const maxH = 560;
         let w = img2.naturalWidth;
@@ -230,18 +255,53 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
   const enterCropMode = () => {
     setCropMode(true);
     setCropRect(null);
+    setCropAspectRatio(null);
   };
 
   // 退出裁剪模式
   const exitCropMode = () => {
     setCropMode(false);
     setCropRect(null);
+    setCropAspectRatio(null);
     // 清除裁剪遮罩层
     const cropCanvas = cropCanvasRef.current;
     if (cropCanvas) {
       const ctx = cropCanvas.getContext('2d')!;
       ctx.clearRect(0, 0, cropCanvas.width, cropCanvas.height);
     }
+  };
+
+  // 选择预设比例后，自动生成居中的裁剪框（占满最大可用区域）
+  const handlePresetSelect = (ratio: number | null) => {
+    setCropAspectRatio(ratio);
+    if (ratio === null) {
+      // 自由裁剪，清除当前选区
+      setCropRect(null);
+      drawCropOverlay(null);
+      return;
+    }
+    // 根据比例计算最大裁剪框（居中，占满画布）
+    const cropCanvas = cropCanvasRef.current;
+    if (!cropCanvas) return;
+    const canvasW = cropCanvas.width;
+    const canvasH = cropCanvas.height;
+
+    let w: number, h: number;
+    if (canvasW / canvasH > ratio) {
+      // 画布更宽，以高度为基准
+      h = canvasH;
+      w = h * ratio;
+    } else {
+      // 画布更高，以宽度为基准
+      w = canvasW;
+      h = w / ratio;
+    }
+
+    const x = (canvasW - w) / 2;
+    const y = (canvasH - h) / 2;
+    const newRect = { x, y, w, h };
+    setCropRect(newRect);
+    drawCropOverlay(newRect);
   };
 
   // 绘制裁剪遮罩（暗色遮罩 + 选区透明）
@@ -389,11 +449,29 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
 
     switch (cropDragType.current) {
       case 'create': {
-        const x = Math.max(0, Math.min(startX, pos.x));
-        const y = Math.max(0, Math.min(startY, pos.y));
-        const w = Math.min(Math.abs(pos.x - startX), canvasW - x);
-        const h = Math.min(Math.abs(pos.y - startY), canvasH - y);
-        newRect = { x, y, w, h };
+        if (cropAspectRatio) {
+          // 锁定比例创建
+          let w = Math.abs(pos.x - startX);
+          let h = w / cropAspectRatio;
+          if (h > Math.abs(pos.y - startY) && !cropAspectRatio) {
+            h = Math.abs(pos.y - startY);
+            w = h * cropAspectRatio;
+          }
+          // 确保不超出画布
+          const maxW = pos.x > startX ? canvasW - startX : startX;
+          const maxH = pos.y > startY ? canvasH - startY : startY;
+          if (w > maxW) { w = maxW; h = w / cropAspectRatio; }
+          if (h > maxH) { h = maxH; w = h * cropAspectRatio; }
+          const x = pos.x > startX ? startX : startX - w;
+          const y = pos.y > startY ? startY : startY - h;
+          newRect = { x: Math.max(0, x), y: Math.max(0, y), w, h };
+        } else {
+          const x = Math.max(0, Math.min(startX, pos.x));
+          const y = Math.max(0, Math.min(startY, pos.y));
+          const w = Math.min(Math.abs(pos.x - startX), canvasW - x);
+          const h = Math.min(Math.abs(pos.y - startY), canvasH - y);
+          newRect = { x, y, w, h };
+        }
         break;
       }
       case 'move': {
@@ -406,53 +484,119 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
         break;
       }
       case 'n': {
-        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
-        const newH = startRect.h - (newY - startRect.y);
-        newRect = { x: startRect.x, y: newY, w: startRect.w, h: newH };
+        if (cropAspectRatio) {
+          const newH = Math.max(10, startRect.h - dy);
+          const newW = newH * cropAspectRatio;
+          const newY = startRect.y + startRect.h - newH;
+          if (newY < 0 || newW > canvasW) { newRect = startRect; break; }
+          const newX = startRect.x + (startRect.w - newW) / 2;
+          newRect = { x: Math.max(0, newX), y: Math.max(0, newY), w: newW, h: newH };
+        } else {
+          const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+          const newH = startRect.h - (newY - startRect.y);
+          newRect = { x: startRect.x, y: newY, w: startRect.w, h: newH };
+        }
         break;
       }
       case 's': {
-        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
-        newRect = { x: startRect.x, y: startRect.y, w: startRect.w, h: newH };
+        if (cropAspectRatio) {
+          const newH = Math.max(10, startRect.h + dy);
+          const newW = newH * cropAspectRatio;
+          if (startRect.y + newH > canvasH || newW > canvasW) { newRect = startRect; break; }
+          const newX = startRect.x + (startRect.w - newW) / 2;
+          newRect = { x: Math.max(0, newX), y: startRect.y, w: newW, h: newH };
+        } else {
+          const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+          newRect = { x: startRect.x, y: startRect.y, w: startRect.w, h: newH };
+        }
         break;
       }
       case 'w': {
-        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
-        const newW = startRect.w - (newX - startRect.x);
-        newRect = { x: newX, y: startRect.y, w: newW, h: startRect.h };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w - dx);
+          const newH = newW / cropAspectRatio;
+          const newX = startRect.x + startRect.w - newW;
+          if (newX < 0 || newH > canvasH) { newRect = startRect; break; }
+          const newY = startRect.y + (startRect.h - newH) / 2;
+          newRect = { x: Math.max(0, newX), y: Math.max(0, newY), w: newW, h: newH };
+        } else {
+          const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+          const newW = startRect.w - (newX - startRect.x);
+          newRect = { x: newX, y: startRect.y, w: newW, h: startRect.h };
+        }
         break;
       }
       case 'e': {
-        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
-        newRect = { x: startRect.x, y: startRect.y, w: newW, h: startRect.h };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w + dx);
+          const newH = newW / cropAspectRatio;
+          if (startRect.x + newW > canvasW || newH > canvasH) { newRect = startRect; break; }
+          const newY = startRect.y + (startRect.h - newH) / 2;
+          newRect = { x: startRect.x, y: Math.max(0, newY), w: newW, h: newH };
+        } else {
+          const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+          newRect = { x: startRect.x, y: startRect.y, w: newW, h: startRect.h };
+        }
         break;
       }
       case 'nw': {
-        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
-        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
-        const newW = startRect.w - (newX - startRect.x);
-        const newH = startRect.h - (newY - startRect.y);
-        newRect = { x: newX, y: newY, w: newW, h: newH };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w - dx);
+          const newH = newW / cropAspectRatio;
+          const newX = startRect.x + startRect.w - newW;
+          const newY = startRect.y + startRect.h - newH;
+          if (newX < 0 || newY < 0) { newRect = startRect; break; }
+          newRect = { x: newX, y: newY, w: newW, h: newH };
+        } else {
+          const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+          const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+          const newW = startRect.w - (newX - startRect.x);
+          const newH = startRect.h - (newY - startRect.y);
+          newRect = { x: newX, y: newY, w: newW, h: newH };
+        }
         break;
       }
       case 'ne': {
-        const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
-        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
-        const newH = startRect.h - (newY - startRect.y);
-        newRect = { x: startRect.x, y: newY, w: newW, h: newH };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w + dx);
+          const newH = newW / cropAspectRatio;
+          const newY = startRect.y + startRect.h - newH;
+          if (newY < 0 || startRect.x + newW > canvasW) { newRect = startRect; break; }
+          newRect = { x: startRect.x, y: newY, w: newW, h: newH };
+        } else {
+          const newY = Math.max(0, Math.min(startRect.y + dy, startRect.y + startRect.h - 10));
+          const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+          const newH = startRect.h - (newY - startRect.y);
+          newRect = { x: startRect.x, y: newY, w: newW, h: newH };
+        }
         break;
       }
       case 'sw': {
-        const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
-        const newW = startRect.w - (newX - startRect.x);
-        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
-        newRect = { x: newX, y: startRect.y, w: newW, h: newH };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w - dx);
+          const newH = newW / cropAspectRatio;
+          const newX = startRect.x + startRect.w - newW;
+          if (newX < 0 || startRect.y + newH > canvasH) { newRect = startRect; break; }
+          newRect = { x: newX, y: startRect.y, w: newW, h: newH };
+        } else {
+          const newX = Math.max(0, Math.min(startRect.x + dx, startRect.x + startRect.w - 10));
+          const newW = startRect.w - (newX - startRect.x);
+          const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+          newRect = { x: newX, y: startRect.y, w: newW, h: newH };
+        }
         break;
       }
       case 'se': {
-        const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
-        const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
-        newRect = { x: startRect.x, y: startRect.y, w: newW, h: newH };
+        if (cropAspectRatio) {
+          const newW = Math.max(10, startRect.w + dx);
+          const newH = newW / cropAspectRatio;
+          if (startRect.x + newW > canvasW || startRect.y + newH > canvasH) { newRect = startRect; break; }
+          newRect = { x: startRect.x, y: startRect.y, w: newW, h: newH };
+        } else {
+          const newW = Math.max(10, Math.min(startRect.w + dx, canvasW - startRect.x));
+          const newH = Math.max(10, Math.min(startRect.h + dy, canvasH - startRect.y));
+          newRect = { x: startRect.x, y: startRect.y, w: newW, h: newH };
+        }
         break;
       }
       default:
@@ -469,35 +613,74 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
     cropDragStart.current = null;
   };
 
-  // 确认裁剪：截取选区部分作为新图片
+  // 确认裁剪：基于原图分辨率截取选区部分
   const handleCropConfirm = () => {
     if (!cropRect || cropRect.w < 5 || cropRect.h < 5) return;
 
-    // 合并 base + overlay，然后裁剪选区
     const canvas = canvasRef.current;
     const overlay = overlayRef.current;
-    const merged = document.createElement('canvas');
-    merged.width = canvas.width;
-    merged.height = canvas.height;
-    const mctx = merged.getContext('2d')!;
-    mctx.drawImage(canvas, 0, 0);
-    mctx.drawImage(overlay, 0, 0);
 
-    // 创建裁剪后的画布
-    const croppedCanvas = document.createElement('canvas');
-    croppedCanvas.width = Math.round(cropRect.w);
-    croppedCanvas.height = Math.round(cropRect.h);
-    const cctx = croppedCanvas.getContext('2d')!;
-    cctx.drawImage(
-      merged,
-      Math.round(cropRect.x), Math.round(cropRect.y),
-      Math.round(cropRect.w), Math.round(cropRect.h),
-      0, 0,
-      Math.round(cropRect.w), Math.round(cropRect.h)
-    );
+    // 计算画布坐标到原图坐标的缩放比例
+    const scaleX = originalImageSize.current.w / canvas.width;
+    const scaleY = originalImageSize.current.h / canvas.height;
 
-    // 直接保存裁剪结果
-    onSave(croppedCanvas.toDataURL('image/png'));
+    // 将裁剪框映射到原图坐标
+    const origCropX = Math.round(cropRect.x * scaleX);
+    const origCropY = Math.round(cropRect.y * scaleY);
+    const origCropW = Math.round(cropRect.w * scaleX);
+    const origCropH = Math.round(cropRect.h * scaleY);
+
+    // 先在原图尺寸上合并 base + overlay
+    const fullCanvas = document.createElement('canvas');
+    fullCanvas.width = originalImageSize.current.w;
+    fullCanvas.height = originalImageSize.current.h;
+    const fctx = fullCanvas.getContext('2d')!;
+
+    // 重新加载原图到全尺寸画布
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => {
+      fctx.drawImage(img, 0, 0, originalImageSize.current.w, originalImageSize.current.h);
+
+      // 将 overlay 绘制层也按比例绘制到全尺寸画布上
+      fctx.drawImage(overlay, 0, 0, originalImageSize.current.w, originalImageSize.current.h);
+
+      // 从全尺寸画布中裁剪
+      const croppedCanvas = document.createElement('canvas');
+      croppedCanvas.width = origCropW;
+      croppedCanvas.height = origCropH;
+      const cctx = croppedCanvas.getContext('2d')!;
+      cctx.drawImage(
+        fullCanvas,
+        origCropX, origCropY, origCropW, origCropH,
+        0, 0, origCropW, origCropH
+      );
+
+      onSave(croppedCanvas.toDataURL('image/png'));
+    };
+    img.onerror = () => {
+      // 如果原图加载失败，回退到画布尺寸裁剪
+      const merged = document.createElement('canvas');
+      merged.width = canvas.width;
+      merged.height = canvas.height;
+      const mctx = merged.getContext('2d')!;
+      mctx.drawImage(canvas, 0, 0);
+      mctx.drawImage(overlay, 0, 0);
+
+      const croppedCanvas = document.createElement('canvas');
+      croppedCanvas.width = Math.round(cropRect.w);
+      croppedCanvas.height = Math.round(cropRect.h);
+      const cctx = croppedCanvas.getContext('2d')!;
+      cctx.drawImage(
+        merged,
+        Math.round(cropRect.x), Math.round(cropRect.y),
+        Math.round(cropRect.w), Math.round(cropRect.h),
+        0, 0,
+        Math.round(cropRect.w), Math.round(cropRect.h)
+      );
+      onSave(croppedCanvas.toDataURL('image/png'));
+    };
+    img.src = proxyUrl(resolvedUrl);
   };
 
   // 进入裁剪模式时绘制初始遮罩
@@ -509,6 +692,12 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
 
   // ── 保存 ──
   const handleSave = () => {
+    // 如果在裁剪模式且有有效选区，执行裁剪保存
+    if (cropMode && cropRect && cropRect.w > 5 && cropRect.h > 5) {
+      handleCropConfirm();
+      return;
+    }
+
     // 先提交未完成的文字
     if (pendingText && pendingValue.trim()) {
       const overlay = overlayRef.current;
@@ -599,93 +788,128 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
             </button>
           </div>
 
-          {/* 颜色选择 */}
-          <div className="flex items-center gap-1.5">
-            {COLORS.map((c) => (
+          {cropMode ? (
+            <>
+              {/* 裁剪模式：显示预设比例选择 */}
+              <div className="flex items-center gap-1.5 flex-wrap">
+                <span className="text-xs text-runway-slate">画幅：</span>
+                {CROP_PRESETS.map((preset) => (
+                  <button
+                    key={preset.label}
+                    onClick={() => handlePresetSelect(preset.ratio)}
+                    className={`px-2.5 py-1 text-xs rounded border transition-colors ${
+                      cropAspectRatio === preset.ratio
+                        ? 'bg-white text-black border-white font-medium'
+                        : 'text-runway-slate border-runway-border hover:text-white hover:border-runway-charcoal'
+                    }`}
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
+
+              <div className="flex-1" />
+
+              {/* 裁剪模式右侧：取消裁剪 */}
               <button
-                key={c}
-                onClick={() => setColor(c)}
-                className={`w-5 h-5 rounded-full border-2 transition-transform ${color === c ? 'border-white scale-125' : 'border-transparent hover:scale-110'}`}
-                style={{ backgroundColor: c }}
-              />
-            ))}
-          </div>
+                onClick={exitCropMode}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
+              >
+                取消裁剪
+              </button>
+            </>
+          ) : (
+            <>
+              {/* 非裁剪模式：颜色、字号、旋转 */}
+              {/* 颜色选择 */}
+              <div className="flex items-center gap-1.5">
+                {COLORS.map((c) => (
+                  <button
+                    key={c}
+                    onClick={() => setColor(c)}
+                    className={`w-5 h-5 rounded-full border-2 transition-transform ${color === c ? 'border-white scale-125' : 'border-transparent hover:scale-110'}`}
+                    style={{ backgroundColor: c }}
+                  />
+                ))}
+              </div>
 
-          {/* 笔刷大小 / 字号 */}
-          <div className="flex items-center gap-1.5 ml-1">
-            <span className="text-xs text-runway-slate">{tool === 'pen' ? '笔刷' : '字号'}</span>
-            <button
-              onClick={() => tool === 'pen' ? setBrushSize(s => Math.max(1, s - 2)) : setFontSize(s => Math.max(10, s - 4))}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-            >
-              <Minus className="w-3 h-3" />
-            </button>
-            <span className="text-xs text-white w-6 text-center">{tool === 'pen' ? brushSize : fontSize}</span>
-            <button
-              onClick={() => tool === 'pen' ? setBrushSize(s => Math.min(40, s + 2)) : setFontSize(s => Math.min(72, s + 4))}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-            >
-              <Plus className="w-3 h-3" />
-            </button>
-          </div>
+              {/* 笔刷大小 / 字号 */}
+              <div className="flex items-center gap-1.5 ml-1">
+                <span className="text-xs text-runway-slate">{tool === 'pen' ? '笔刷' : '字号'}</span>
+                <button
+                  onClick={() => tool === 'pen' ? setBrushSize(s => Math.max(1, s - 2)) : setFontSize(s => Math.max(10, s - 4))}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                >
+                  <Minus className="w-3 h-3" />
+                </button>
+                <span className="text-xs text-white w-6 text-center">{tool === 'pen' ? brushSize : fontSize}</span>
+                <button
+                  onClick={() => tool === 'pen' ? setBrushSize(s => Math.min(40, s + 2)) : setFontSize(s => Math.min(72, s + 4))}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+              </div>
 
-          {/* 旋转控制 */}
-          <div className="flex items-center gap-1.5 ml-1 border-l border-runway-border pl-3">
-            <span className="text-xs text-runway-slate">旋转</span>
-            <button
-              onClick={() => setRotation(r => r - 90)}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-              title="逆时针旋转90°"
-            >
-              <RotateCcw className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => setRotation(r => r - 5)}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-              title="逆时针旋转5°"
-            >
-              <Minus className="w-3 h-3" />
-            </button>
-            <span className="text-xs text-white w-10 text-center">{displayRotation}°</span>
-            <button
-              onClick={() => setRotation(r => r + 5)}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-              title="顺时针旋转5°"
-            >
-              <Plus className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => setRotation(r => r + 90)}
-              className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
-              title="顺时针旋转90°"
-            >
-              <RotateCw className="w-3 h-3" />
-            </button>
-            <button
-              onClick={() => setRotation(0)}
-              className="px-2 py-1 border border-runway-border text-runway-slate text-xs rounded hover:text-white transition-colors"
-              title="重置旋转"
-            >
-              重置
-            </button>
-          </div>
+              {/* 旋转控制 */}
+              <div className="flex items-center gap-1.5 ml-1 border-l border-runway-border pl-3">
+                <span className="text-xs text-runway-slate">旋转</span>
+                <button
+                  onClick={() => setRotation(r => r - 90)}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                  title="逆时针旋转90°"
+                >
+                  <RotateCcw className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => setRotation(r => r - 5)}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                  title="逆时针旋转5°"
+                >
+                  <Minus className="w-3 h-3" />
+                </button>
+                <span className="text-xs text-white w-10 text-center">{displayRotation}°</span>
+                <button
+                  onClick={() => setRotation(r => r + 5)}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                  title="顺时针旋转5°"
+                >
+                  <Plus className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => setRotation(r => r + 90)}
+                  className="w-6 h-6 flex items-center justify-center border border-runway-border rounded text-runway-slate hover:text-white transition-colors"
+                  title="顺时针旋转90°"
+                >
+                  <RotateCw className="w-3 h-3" />
+                </button>
+                <button
+                  onClick={() => setRotation(0)}
+                  className="px-2 py-1 border border-runway-border text-runway-slate text-xs rounded hover:text-white transition-colors"
+                  title="重置旋转"
+                >
+                  重置
+                </button>
+              </div>
 
-          <div className="flex-1" />
+              <div className="flex-1" />
 
-          {/* 撤销 / 清除 */}
-          <button
-            onClick={handleUndo}
-            disabled={!canUndo}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-30"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />撤销
-          </button>
-          <button
-            onClick={handleClear}
-            className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-red-400 hover:border-red-400/50 transition-colors"
-          >
-            <ImageIcon className="w-3.5 h-3.5" />恢复原图
-          </button>
+              {/* 撤销 / 清除 */}
+              <button
+                onClick={handleUndo}
+                disabled={!canUndo}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-30"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />撤销
+              </button>
+              <button
+                onClick={handleClear}
+                className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-red-400 hover:border-red-400/50 transition-colors"
+              >
+                <ImageIcon className="w-3.5 h-3.5" />恢复原图
+              </button>
+            </>
+          )}
         </div>
 
         {/* 画布区域 */}
@@ -726,41 +950,6 @@ export default function ImageEditorModal({ imageUrl, originalUrl, label, onSave,
               onMouseLeave={handleCropMouseUp}
             />
           </div>
-
-          {/* 裁剪模式操作提示 */}
-          {cropMode && (
-            <div className="absolute bottom-4 left-1/2 -translate-x-1/2 flex items-center gap-3 bg-runway-surface/95 border border-runway-border rounded-lg px-4 py-2.5 shadow-xl backdrop-blur-sm">
-              {cropRect && cropRect.w > 5 && cropRect.h > 5 ? (
-                <>
-                  <span className="text-xs text-runway-slate">
-                    选区：{Math.round(cropRect.w)} × {Math.round(cropRect.h)} px
-                  </span>
-                  <button
-                    onClick={handleCropConfirm}
-                    className="flex items-center gap-1.5 px-3 py-1.5 bg-white text-black text-xs font-medium rounded-md hover:bg-runway-cloud transition-colors"
-                  >
-                    <Crop className="w-3.5 h-3.5" />确认裁剪并保存
-                  </button>
-                  <button
-                    onClick={exitCropMode}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-                  >
-                    取消
-                  </button>
-                </>
-              ) : (
-                <>
-                  <span className="text-xs text-runway-slate">拖拽鼠标框选要保留的区域</span>
-                  <button
-                    onClick={exitCropMode}
-                    className="flex items-center gap-1.5 px-3 py-1.5 border border-runway-border text-runway-slate text-xs rounded-md hover:text-white hover:border-runway-charcoal transition-colors"
-                  >
-                    取消裁剪
-                  </button>
-                </>
-              )}
-            </div>
-          )}
 
           {/* 文字输入框（浮动在 overlay 上） */}
           {pendingText && overlayRect && (
