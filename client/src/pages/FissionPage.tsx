@@ -4,9 +4,10 @@ import GenerateStep from '../components/fission/GenerateStep';
 import CaptureFrameModal from '../components/fission/CaptureFrameModal';
 import VideoTrimModal from '../components/fission/VideoTrimModal';
 import ImageEditorModal from '../components/ImageEditorModal';
+import ImageCompositorModal from '../components/fission/ImageCompositorModal';
 import { useImagePrepare } from '../hooks/useImagePrepare';
 import { useVideoGenerate } from '../hooks/useVideoGenerate';
-import type { PreparedImage } from '../components/fission/types';
+
 
 type FissionStep = 'prepare' | 'generate';
 
@@ -19,6 +20,7 @@ export default function FissionPage() {
   const [step, setStep] = useState<FissionStep>('generate');
   const [showCaptureModal, setShowCaptureModal] = useState(false);
   const [showVideoTrimModal, setShowVideoTrimModal] = useState(false);
+  const [showCompositorModal, setShowCompositorModal] = useState(false);
   const [editingImage, setEditingImage] = useState<EditingImage | null>(null);
 
   // ── 垫图准备阶段 ──
@@ -48,6 +50,35 @@ export default function FissionPage() {
   // 图生图：把垫图加入源图列表
   const handleAddToImg2imgSource = (url: string, label: string) => {
     imagePrepare.setImg2imgSources((prev) => [...prev, { url, label }]);
+  };
+
+  // 融合导出处理
+  const handleCompositorExport = async (dataUrl: string, target: 'img2img' | 'pad') => {
+    setShowCompositorModal(false);
+    try {
+      // 将 dataUrl 转为 File 并上传
+      const res = await fetch(dataUrl);
+      const blob = await res.blob();
+      const file = new File([blob], `composite_${Date.now()}.png`, { type: 'image/png' });
+      const { uploadImage } = await import('../api/image');
+      const result = await uploadImage(file);
+
+      if (target === 'img2img') {
+        imagePrepare.setImg2imgSources((prev) => [...prev, { url: result.url, label: '融合图片' }]);
+        imagePrepare.setPrepareTab('img2img');
+      } else {
+        const newId = `composite_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        imagePrepare.addImage({
+          id: newId,
+          url: result.url,
+          originalUrl: result.url,
+          source: 'img2img',
+          label: '融合图片',
+        });
+      }
+    } catch (err: any) {
+      console.error('融合图片上传失败:', err);
+    }
   };
 
   return (
@@ -110,12 +141,14 @@ export default function FissionPage() {
             onT2iModelChange={imagePrepare.setT2iModel}
             onI2iModelChange={imagePrepare.setI2iModel}
             onOpenCaptureModal={() => handleOpenCaptureModal('pad')}
+            onOpenCompositor={() => setShowCompositorModal(true)}
             onAddToImg2imgSource={handleAddToImg2imgSource}
             onEditImg2imgSource={handleEditImg2imgSource}
             onEditPadImage={handleEditPadImage}
             onUpdateGroupSelectedUrls={imagePrepare.updateGroupSelectedUrls}
             onT2iCompareVariantsChange={imagePrepare.setT2iCompareVariants}
             onI2iCompareVariantsChange={imagePrepare.setI2iCompareVariants}
+            onAddImage={imagePrepare.addImage}
             onNext={() => setStep('generate')}
           />
         ) : (
@@ -198,6 +231,14 @@ export default function FissionPage() {
             setEditingImage(null);
           }}
           onClose={() => setEditingImage(null)}
+        />
+      )}
+
+      {/* 图片位置融合弹窗 */}
+      {showCompositorModal && (
+        <ImageCompositorModal
+          onClose={() => setShowCompositorModal(false)}
+          onExport={handleCompositorExport}
         />
       )}
     </div>

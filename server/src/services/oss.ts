@@ -11,6 +11,8 @@ function getClient(): OSS {
       accessKeyId: process.env.OSS_ACCESS_KEY_ID!,
       accessKeySecret: process.env.OSS_ACCESS_KEY_SECRET!,
       bucket: process.env.OSS_BUCKET!,
+      secure: true, // 强制使用 HTTPS，避免 HTTP 连接被重置
+      timeout: 120000, // 上传超时 120 秒
     });
   }
   return _client;
@@ -31,12 +33,25 @@ export function getSignedUrl(ossKey: string, expires: number = 3600): string {
 
 /**
  * 上传 Buffer 到 OSS，返回可访问的 URL
+ * 大文件（>5MB）使用分片上传，小文件直接 put
  * 私有 Bucket 返回签名 URL，公共读 Bucket 返回直接 URL
  */
 export async function uploadBufferToOSS(buffer: Buffer, filename: string): Promise<string> {
   const ossKey = `${PREFIX()}${filename}`;
-  await getClient().put(ossKey, buffer);
-  // 使用签名 URL，兼容私有 Bucket
+  const MULTIPART_THRESHOLD = 5 * 1024 * 1024; // 5MB
+
+  if (buffer.length > MULTIPART_THRESHOLD) {
+    // 大文件使用分片上传，自带断点续传和重试
+    const { Readable } = await import('stream');
+    const stream = Readable.from(buffer);
+    await getClient().putStream(ossKey, stream, {
+      timeout: 180000, // 3 分钟超时
+      headers: { 'Content-Length': String(buffer.length) },
+    });
+  } else {
+    await getClient().put(ossKey, buffer);
+  }
+
   return getSignedUrl(ossKey);
 }
 

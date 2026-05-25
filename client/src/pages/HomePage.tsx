@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Flame, TrendingUp, Newspaper, ExternalLink, RefreshCw, Loader2 } from 'lucide-react';
-import { fetchAINews, NewsItem } from '../api/news';
+import { fetchAINews, type NewsItem } from '../api/news';
 
 // 热门话题（静态展示，后续可接入动态数据）
 const trendingTopics = [

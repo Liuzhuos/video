@@ -15,7 +15,7 @@ imageRouter.use(optionalAuth);
 // 内存存储，不写磁盘
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 10 * 1024 * 1024 }, // 10MB
+  limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
   fileFilter: (_req, file, cb) => {
     const allowedTypes = ['image/jpeg', 'image/png', 'image/webp'];
     if (allowedTypes.includes(file.mimetype)) {
@@ -157,6 +157,35 @@ imageRouter.post('/generate-async', async (req: Request, res: Response) => {
       error: error.message || '创建图片生成任务失败',
       detail: error.message,
     });
+  }
+});
+
+// GET /api/image/history - 获取当前用户历史生成的图片素材
+imageRouter.get('/history', async (req: AuthRequest, res: Response) => {
+  if (!req.userId) {
+    res.status(401).json({ error: '请先登录' });
+    return;
+  }
+  try {
+    const page = parseInt((req.query.page as string) || '1', 10);
+    const pageSize = parseInt((req.query.pageSize as string) || '30', 10);
+    const skip = (page - 1) * pageSize;
+
+    const [items, total] = await Promise.all([
+      prisma.media.findMany({
+        where: { userId: req.userId, type: 'IMAGE' },
+        orderBy: { createdAt: 'desc' },
+        skip,
+        take: pageSize,
+        select: { id: true, url: true, prompt: true, createdAt: true, filename: true },
+      }),
+      prisma.media.count({ where: { userId: req.userId, type: 'IMAGE' } }),
+    ]);
+
+    res.json({ items, total, page, pageSize });
+  } catch (err: any) {
+    console.error('[历史图片] 查询失败:', err.message);
+    res.status(500).json({ error: '查询历史图片失败' });
   }
 });
 

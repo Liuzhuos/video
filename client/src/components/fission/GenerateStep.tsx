@@ -63,7 +63,7 @@ export default function GenerateStep({
   onVideoPromptChange, onVideoDurationChange, onVideoResolutionChange,
   onVideoRatioChange, onGenerateAudioChange, onRealPersonModeChange,
   onUseRefVideoChange, onUseRefAudioChange,
-  onRefVideoUpload, onRefAudioUpload, onOpenVideoTrimModal, onClearRefVideo,
+  onRefAudioUpload, onOpenVideoTrimModal, onClearRefVideo,
   onEditPadImage, onUpdateGroupSelectedUrls, onGenerate, onBack,
 }: GenerateStepProps) {
   const refAudioInputRef = useRef<HTMLInputElement>(null!);

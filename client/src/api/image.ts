@@ -20,6 +20,33 @@ export async function uploadImage(file: File): Promise<{ url: string }> {
   return response.json();
 }
 
+export interface HistoryImageItem {
+  id: number;
+  url: string;
+  prompt: string | null;
+  createdAt: string;
+  filename: string;
+}
+
+export interface HistoryImageResult {
+  items: HistoryImageItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+}
+
+/**
+ * 获取当前用户历史生成的图片素材
+ */
+export async function fetchImageHistory(page = 1, pageSize = 30): Promise<HistoryImageResult> {
+  const response = await authFetch(`/api/image/history?page=${page}&pageSize=${pageSize}`);
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || '获取历史图片失败');
+  }
+  return response.json();
+}
+
 /**
  * 文生图（调用后端 RunningHub API）
  */

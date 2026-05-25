@@ -1,9 +1,180 @@
-import { useRef } from 'react';
-import { Upload, Image as ImageIcon, Wand2, Film, ChevronRight, Check, X, Loader2 } from 'lucide-react';
+import { useRef, useState, useEffect, useCallback } from 'react';
+import { Upload, Image as ImageIcon, Wand2, Film, ChevronRight, Check, X, Loader2, History, RefreshCw, Eye, Download, Layers } from 'lucide-react';
 import PromptEditor, { type Asset } from '../PromptEditor';
 import ImageGroupCard from './ImageGroupCard';
 import { AspectRatioSelector, ResolutionSelector, ModelSelector } from './FissionControls';
 import type { PreparedImage, ImageModel, CompareVariant } from './types';
+import { fetchImageHistory, type HistoryImageItem } from '../../api/image';
+
+// ── 图片预览弹窗 ──────────────────────────────────────────
+function PreviewModal({ url, onClose }: { url: string; onClose: () => void }) {
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/85 backdrop-blur-sm"
+      onClick={onClose}
+    >
+      <button
+        onClick={onClose}
+        className="absolute top-5 right-5 w-9 h-9 rounded-full bg-white/10 hover:bg-white/20 flex items-center justify-center transition-colors"
+      >
+        <X className="w-5 h-5 text-white" />
+      </button>
+      <img
+        src={url}
+        alt="预览"
+        className="max-w-[90vw] max-h-[90vh] object-contain rounded-xl shadow-2xl"
+        onClick={(e) => e.stopPropagation()}
+      />
+    </div>
+  );
+}
+
+// ── iOS 风格圆形操作按钮 ──────────────────────────────────
+interface ActionBtnProps {
+  icon: React.ReactNode;
+  label: string;
+  onClick: (e: React.MouseEvent) => void | Promise<void>;
+  variant?: 'default' | 'active';
+  disabled?: boolean;
+}
+function ActionBtn({ icon, label, onClick, variant = 'default', disabled }: ActionBtnProps) {
+  return (
+    <button
+      onClick={onClick}
+      disabled={disabled}
+      title={label}
+      className={`
+        flex flex-col items-center gap-1 group/btn disabled:opacity-40 disabled:cursor-not-allowed
+      `}
+    >
+      <span className={`
+        w-9 h-9 rounded-full flex items-center justify-center transition-all duration-150
+        shadow-lg backdrop-blur-md
+        ${variant === 'active'
+          ? 'bg-white text-black'
+          : 'bg-black/50 text-white hover:bg-white/90 hover:text-black border border-white/20'
+        }
+      `}>
+        {icon}
+      </span>
+      <span className="text-[10px] text-white/80 leading-none font-medium drop-shadow">{label}</span>
+    </button>
+  );
+}
+
+// ── 通用图片卡片 ──────────────────────────────────────────
+interface ImageCardProps {
+  url: string;
+  label: string;
+  isSelected: boolean;
+  isDisabled?: boolean;
+  subLabel?: string;
+  onSelect: () => void;
+  onImg2img: () => void;
+  onRemove?: () => void;
+  extraTopLeft?: React.ReactNode;
+}
+function ImageCard({
+  url, label, isSelected, isDisabled, subLabel,
+  onSelect, onImg2img, onRemove, extraTopLeft,
+}: ImageCardProps) {
+  const [showPreview, setShowPreview] = useState(false);
+  const resolvedUrl = url.startsWith('http') ? url : `http://localhost:3001${url}`;
+
+  const handleDownload = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      const response = await fetch(resolvedUrl);
+      const blob = await response.blob();
+      const blobUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = blobUrl;
+      a.download = `${label || 'image'}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(blobUrl);
+    } catch {
+      // 跨域 fallback：直接新标签打开
+      window.open(resolvedUrl, '_blank', 'noopener,noreferrer');
+    }
+  };
+
+  return (
+    <>
+      <div
+        onClick={() => !isDisabled && onSelect()}
+        className={`
+          relative rounded-xl overflow-hidden border-2 transition-all duration-200 group
+          ${isDisabled ? 'cursor-default' : 'cursor-pointer'}
+          ${isSelected ? 'border-white shadow-[0_0_0_1px_rgba(255,255,255,0.4)] shadow-lg' : 'border-runway-border hover:border-white/40'}
+        `}
+      >
+        {/* 图片主体 */}
+        <div className="relative w-full aspect-video bg-black">
+          <img
+            src={resolvedUrl}
+            alt={label}
+            className="absolute inset-0 w-full h-full object-contain"
+          />
+        </div>
+
+        {/* 渐变遮罩（hover 或选中时显示） */}
+        <div className={`absolute inset-0 transition-opacity duration-200 bg-gradient-to-t from-black/70 via-transparent to-transparent pointer-events-none ${isSelected ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'}`} />
+
+        {/* 左上角：选中勾 / 自定义内容 */}
+        <div className="absolute top-2 left-2 pointer-events-none">
+          {isSelected ? (
+            <span className="w-5 h-5 rounded-full bg-white flex items-center justify-center shadow">
+              <Check className="w-3 h-3 text-black" />
+            </span>
+          ) : extraTopLeft}
+        </div>
+
+        {/* 右上角：删除 */}
+        {onRemove && (
+          <button
+            onClick={(e) => { e.stopPropagation(); onRemove(); }}
+            className="absolute top-2 right-2 w-6 h-6 rounded-full bg-black/50 border border-white/20 flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity hover:bg-red-500/80 backdrop-blur-sm"
+          >
+            <X className="w-3 h-3 text-white" />
+          </button>
+        )}
+
+        {/* 底部：三个 iOS 圆形按钮 + 标签 */}
+        <div className="absolute bottom-0 left-0 right-0 px-2.5 pb-2.5 pt-6 opacity-0 group-hover:opacity-100 transition-opacity duration-200">
+          <div className="flex items-end justify-between">
+            {/* 标签 */}
+            <span className="text-xs text-white/90 truncate max-w-[45%] leading-tight drop-shadow">
+              {label}
+              {subLabel && <span className="block text-white/50 text-[10px]">{subLabel}</span>}
+            </span>
+            {/* 三个按钮 */}
+            <div className="flex items-end gap-2" onClick={(e) => e.stopPropagation()}>
+              <ActionBtn
+                icon={<Eye className="w-4 h-4" />}
+                label="预览"
+                onClick={(e) => { e.stopPropagation(); setShowPreview(true); }}
+              />
+              <ActionBtn
+                icon={<Download className="w-4 h-4" />}
+                label="下载"
+                onClick={handleDownload}
+              />
+              <ActionBtn
+                icon={<Layers className="w-4 h-4" />}
+                label="图生图"
+                onClick={(e) => { e.stopPropagation(); onImg2img(); }}
+              />
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {showPreview && <PreviewModal url={resolvedUrl} onClose={() => setShowPreview(false)} />}
+    </>
+  );
+}
 
 export interface PrepareStepProps {
   images: PreparedImage[];
@@ -34,12 +205,14 @@ export interface PrepareStepProps {
   onT2iModelChange: (v: ImageModel) => void;
   onI2iModelChange: (v: ImageModel) => void;
   onOpenCaptureModal: () => void;
+  onOpenCompositor: () => void;
   onAddToImg2imgSource: (url: string, label: string) => void;
   onEditImg2imgSource: (index: number, url: string, label: string, originalUrl: string) => void;
   onEditPadImage: (id: string, url: string, label: string, originalUrl: string) => void;
   onUpdateGroupSelectedUrls: (groupId: string, urls: string[]) => void;
   onT2iCompareVariantsChange: (v: CompareVariant[]) => void;
   onI2iCompareVariantsChange: (v: CompareVariant[]) => void;
+  onAddImage: (img: PreparedImage) => void;
   onNext: () => void;
 }
 
@@ -50,12 +223,35 @@ export default function PrepareStep({
   onActiveTabChange, onTogglePadSelect, onRemoveImage, onTextToImage,
   onImageUpload, onImageToImage, onRemoveSource, onTextToImagePromptChange,
   onImg2imgPromptChange, onAspectRatioChange, onResolutionChange,
-  onT2iModelChange, onI2iModelChange, onOpenCaptureModal, onAddToImg2imgSource,
+  onT2iModelChange, onI2iModelChange, onOpenCaptureModal, onOpenCompositor, onAddToImg2imgSource,
   onEditImg2imgSource, onUpdateGroupSelectedUrls,
-  onT2iCompareVariantsChange, onI2iCompareVariantsChange, onNext,
+  onT2iCompareVariantsChange, onI2iCompareVariantsChange, onAddImage, onNext,
 }: PrepareStepProps) {
   const imageInputRef = useRef<HTMLInputElement>(null!);
 
+  // 右侧区域 Tab：当前垫图 / 历史素材
+  const [rightTab, setRightTab] = useState<'current' | 'history'>('current');
+  const [historyItems, setHistoryItems] = useState<HistoryImageItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+
+  const loadHistory = useCallback(async () => {
+    setHistoryLoading(true);
+    try {
+      const result = await fetchImageHistory(1, 9999);
+      setHistoryItems(result.items);
+    } catch (err) {
+      console.error('加载历史图片失败:', err);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, []);
+
+  // 切换到历史 tab 时自动加载
+  useEffect(() => {
+    if (rightTab === 'history' && historyItems.length === 0) {
+      loadHistory();
+    }
+  }, [rightTab, historyItems.length, loadHistory]);
   const img2imgAssets: Asset[] = img2imgSources.map((src, i) => ({
     type: 'image' as const,
     label: `图片${i + 1}`,
@@ -150,6 +346,13 @@ export default function PrepareStep({
                     >
                       <Film className="w-3 h-3" />截帧
                     </button>
+                    <button
+                      onClick={onOpenCompositor}
+                      disabled={loading}
+                      className="flex items-center gap-1 px-2 py-1 text-xs border border-runway-border text-runway-slate rounded-md hover:text-white hover:border-runway-charcoal transition-colors disabled:opacity-50"
+                    >
+                      <Layers className="w-3 h-3" />融合
+                    </button>
                   </div>
                 </div>
 
@@ -237,103 +440,174 @@ export default function PrepareStep({
       </div>
 
       {/* 右侧垫图展示区 */}
-      <div className="flex-1 flex flex-col min-w-0 p-6">
-        <div className="flex items-center justify-between mb-3 flex-shrink-0">
-          <div>
-            <h3 className="text-base font-semibold text-white">准备垫图</h3>
-            <p className="text-xs text-runway-slate mt-0.5">
-              已准备 {images.filter((i) => !i.pending).length} 张，已选 {totalSelected} 张用于生成视频
-            </p>
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+        {/* 右侧 Tab 栏 */}
+        <div className="flex items-center justify-between px-6 pt-4 pb-0 flex-shrink-0">
+          <div className="flex items-center gap-1">
+            <button
+              onClick={() => setRightTab('current')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                rightTab === 'current'
+                  ? 'bg-white text-black'
+                  : 'text-runway-slate hover:text-white hover:bg-runway-charcoal'
+              }`}
+            >
+              <ImageIcon className="w-3.5 h-3.5" />
+              当前垫图
+            </button>
+            <button
+              onClick={() => setRightTab('history')}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-md transition-colors ${
+                rightTab === 'history'
+                  ? 'bg-white text-black'
+                  : 'text-runway-slate hover:text-white hover:bg-runway-charcoal'
+              }`}
+            >
+              <History className="w-3.5 h-3.5" />
+              历史素材
+            </button>
           </div>
-          <button
-            onClick={onNext}
-            className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors flex items-center gap-2"
-          >
-            返回生成视频<ChevronRight className="w-4 h-4" />
-          </button>
-        </div>
-
-        <div className="flex-1 overflow-y-auto">
-          {images.length === 0 ? (
-            <div className="h-full border-2 border-dashed border-runway-border rounded-lg flex flex-col items-center justify-center">
-              <ImageIcon className="w-10 h-10 text-runway-mid-slate mb-3" />
-              <p className="text-sm text-runway-mid-slate">还没有垫图</p>
-              <p className="text-xs text-runway-mid-slate mt-1">使用左侧工具生成图片</p>
+          {rightTab === 'current' ? (
+            <div className="flex items-center gap-3">
+              <p className="text-xs text-runway-slate">
+                已准备 {images.filter((i) => !i.pending).length} 张，已选 {totalSelected} 张
+              </p>
+              <button
+                onClick={onNext}
+                className="px-4 py-2 bg-white text-black text-sm font-medium rounded-md hover:bg-runway-cloud transition-colors flex items-center gap-2"
+              >
+                返回生成视频<ChevronRight className="w-4 h-4" />
+              </button>
             </div>
           ) : (
-            <div className="grid grid-cols-3 gap-3 content-start">
-              {images.map((img) =>
-                img.isGroup ? (
-                  <ImageGroupCard
-                    key={img.id}
-                    img={img}
-                    isSelected={selectedPadIds.includes(img.id)}
-                    isDisabled={!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9}
-                    onToggleSelect={() => onTogglePadSelect(img.id)}
-                    onRemove={() => onRemoveImage(img.id)}
-                    onUpdateSelectedUrls={(urls) => onUpdateGroupSelectedUrls(img.id, urls)}
-                  />
-                ) : img.pending ? (
-                  <div
-                    key={img.id}
-                    className="relative rounded-lg overflow-hidden border-2 border-runway-border aspect-video"
-                  >
-                    <div className="absolute inset-0 bg-runway-surface shimmer-placeholder" />
-                    <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
-                      <Wand2 className="w-5 h-5 text-runway-slate animate-pulse" />
-                      <span className="text-xs text-runway-slate">AI 生成中...</span>
-                    </div>
-                  </div>
-                ) : (
-                  <div
-                    key={img.id}
-                    onClick={() => onTogglePadSelect(img.id)}
-                    className={`relative rounded-lg overflow-hidden border-2 cursor-pointer transition-all ${
-                      selectedPadIds.includes(img.id)
-                        ? 'border-white shadow-lg'
-                        : 'border-runway-border hover:border-runway-charcoal'
-                    } group`}
-                  >
-                    <div className="relative w-full aspect-video bg-black">
-                      <img
-                        src={img.url.startsWith('http') ? img.url : `http://localhost:3001${img.url}`}
-                        alt={img.label}
-                        className="absolute inset-0 w-full h-full object-contain"
-                      />
-                    </div>
-                    {selectedPadIds.includes(img.id) && (
-                      <div className="absolute top-2 left-2 w-5 h-5 bg-white rounded-full flex items-center justify-center">
-                        <Check className="w-3 h-3 text-black" />
+            <button
+              onClick={() => loadHistory()}
+              disabled={historyLoading}
+              className="flex items-center gap-1.5 px-3 py-1.5 text-xs text-runway-slate hover:text-white transition-colors disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${historyLoading ? 'animate-spin' : ''}`} />
+              刷新
+            </button>
+          )}
+        </div>
+
+        {/* 当前垫图 Tab */}
+        {rightTab === 'current' && (
+          <div className="flex-1 overflow-y-auto p-6 pt-4">
+            {images.length === 0 ? (
+              <div className="h-full border-2 border-dashed border-runway-border rounded-lg flex flex-col items-center justify-center">
+                <ImageIcon className="w-10 h-10 text-runway-mid-slate mb-3" />
+                <p className="text-sm text-runway-mid-slate">还没有垫图</p>
+                <p className="text-xs text-runway-mid-slate mt-1">使用左侧工具生成图片</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-3 content-start">
+                {images.map((img) =>
+                  img.isGroup ? (
+                    <ImageGroupCard
+                      key={img.id}
+                      img={img}
+                      isSelected={selectedPadIds.includes(img.id)}
+                      isDisabled={!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9}
+                      onToggleSelect={() => onTogglePadSelect(img.id)}
+                      onRemove={() => onRemoveImage(img.id)}
+                      onUpdateSelectedUrls={(urls) => onUpdateGroupSelectedUrls(img.id, urls)}
+                    />
+                  ) : img.pending ? (
+                    <div
+                      key={img.id}
+                      className="relative rounded-xl overflow-hidden border-2 border-runway-border aspect-video"
+                    >
+                      <div className="absolute inset-0 bg-runway-surface shimmer-placeholder" />
+                      <div className="absolute inset-0 flex flex-col items-center justify-center gap-2">
+                        <Wand2 className="w-5 h-5 text-runway-slate animate-pulse" />
+                        <span className="text-xs text-runway-slate">AI 生成中...</span>
                       </div>
-                    )}
-                    {!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9 && (
-                      <div className="absolute inset-0 bg-black/50" />
-                    )}
-                    <button
-                      onClick={(e) => {
-                        e.stopPropagation();
+                    </div>
+                  ) : (
+                    <ImageCard
+                      key={img.id}
+                      url={img.url}
+                      label={img.label}
+                      isSelected={selectedPadIds.includes(img.id)}
+                      isDisabled={!selectedPadIds.includes(img.id) && selectedPadIds.length >= 9}
+                      onSelect={() => onTogglePadSelect(img.id)}
+                      onImg2img={() => {
                         onAddToImg2imgSource(img.url, img.label);
                         onActiveTabChange('img2img');
                       }}
-                      className="absolute bottom-7 left-1/2 -translate-x-1/2 whitespace-nowrap px-2.5 py-1 bg-black/80 text-white text-xs rounded-md opacity-0 group-hover:opacity-100 transition-opacity hover:bg-black flex items-center gap-1.5 border border-white/20"
-                    >
-                      <ImageIcon className="w-3 h-3" />用于图生图
-                    </button>
-                    <button
-                      onClick={(e) => { e.stopPropagation(); onRemoveImage(img.id); }}
-                      className="absolute top-2 right-2 w-5 h-5 bg-black/60 rounded-full flex items-center justify-center hover:bg-black/80"
-                    >
-                      <X className="w-3 h-3 text-white" />
-                    </button>
-                    <div className="absolute bottom-0 left-0 right-0 bg-black/60 px-2 py-1">
-                      <span className="text-xs text-white truncate block">{img.label}</span>
-                    </div>
-                  </div>
-                )
-              )}
-            </div>
-          )}
-        </div>
+                      onRemove={() => onRemoveImage(img.id)}
+                    />
+                  )
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* 历史素材 Tab */}
+        {rightTab === 'history' && (
+          <div className="flex-1 overflow-y-auto p-6 pt-4">
+            {historyLoading && historyItems.length === 0 ? (
+              <div className="h-full flex flex-col items-center justify-center gap-3">
+                <Loader2 className="w-8 h-8 text-runway-slate animate-spin" />
+                <p className="text-sm text-runway-slate">加载历史素材...</p>
+              </div>
+            ) : historyItems.length === 0 ? (
+              <div className="h-full border-2 border-dashed border-runway-border rounded-lg flex flex-col items-center justify-center">
+                <History className="w-10 h-10 text-runway-mid-slate mb-3" />
+                <p className="text-sm text-runway-mid-slate">暂无历史图片素材</p>
+                <p className="text-xs text-runway-mid-slate mt-1">生成图片后会自动保存到这里</p>
+              </div>
+            ) : (
+              <div className="grid grid-cols-3 gap-3 content-start">
+                {historyItems.map((item) => {
+                    const alreadyAdded = images.some((img) => img.url === item.url);
+                    const label = item.prompt
+                      ? item.prompt.slice(0, 20) + (item.prompt.length > 20 ? '...' : '')
+                      : '历史图片';
+                    const subLabel = new Date(item.createdAt).toLocaleDateString('zh-CN', {
+                      month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit',
+                    });
+                    return (
+                      <ImageCard
+                        key={item.id}
+                        url={item.url}
+                        label={label}
+                        subLabel={subLabel}
+                        isSelected={false}
+                        isDisabled={alreadyAdded}
+                        onSelect={() => {
+                          if (alreadyAdded) return;
+                          const newId = `history_${item.id}_${Date.now()}`;
+                          onAddImage({
+                            id: newId,
+                            url: item.url,
+                            originalUrl: item.url,
+                            source: 'text2img',
+                            label,
+                          });
+                          setRightTab('current');
+                        }}
+                        onImg2img={() => {
+                          onAddToImg2imgSource(item.url, label);
+                          onActiveTabChange('img2img');
+                          setRightTab('current');
+                        }}
+                        extraTopLeft={
+                          alreadyAdded ? (
+                            <span className="flex items-center gap-0.5 px-1.5 py-0.5 rounded-full bg-white/90 text-black text-[10px] font-semibold shadow">
+                              <Check className="w-2.5 h-2.5" />已添加
+                            </span>
+                          ) : undefined
+                        }
+                      />
+                    );
+                  })}
+              </div>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

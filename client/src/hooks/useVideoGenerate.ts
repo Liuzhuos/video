@@ -33,7 +33,7 @@ export function useVideoGenerate() {
   const [videoGenerating, setVideoGenerating] = useState(false);
   const [videoLoadingMsg, setVideoLoadingMsg] = useState('');
 
-  const { loading, loadingMsg, error, setError, startLoading, stopLoading, setMsg } = useUploadState();
+  const { loading, loadingMsg, error, setError, startLoading, stopLoading } = useUploadState();
 
   // ── 上传参考视频（裁剪弹窗回调）──
   const handleVideoTrimConfirm = useCallback(

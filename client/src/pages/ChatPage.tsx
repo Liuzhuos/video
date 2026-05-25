@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect } from 'react';
-import { Send, Loader2, Square, Sparkles, ArrowUp, Lightbulb, Code, Film, PenLine, RotateCcw, Copy, Check } from 'lucide-react';
+import { Square, Sparkles, ArrowUp, Lightbulb, Code, Film, PenLine, RotateCcw, Copy, Check } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import { sendMessage } from '../api/chat';
 import type { ChatMessage } from '../types';
